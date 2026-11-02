@@ -1,29 +1,23 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 #ifndef MOTOR_VOFA_H
 #define MOTOR_VOFA_H
+#include "encoder.h"
 
-#include <stdint.h>
-
-/* JustFloat 固定两通道：CH0=编码器计数，CH1=编码器轴机械角度（度）。 */
-#define MOTOR_VOFA_CHANNEL_COUNT 2u
-/* 上传频率，单位 Hz；100 Hz 对应每 10 ms 一帧。 */
+/* JustFloat 五通道：CH0=累计计数；CH1=累计机械角度；CH2=电角度；
+ * CH3=编码器轴原始转速 rpm；CH4=编码器轴滤波转速 rpm。 */
+#define MOTOR_VOFA_CHANNEL_COUNT 5u
+/* 上传频率，100 Hz 对应每 10 ms 一帧，与约 1 ms 的测速更新相互独立。 */
 #define MOTOR_VOFA_SAMPLE_HZ 100u
 
 /* board_init() 后调用一次；0=成功，负数=初始化失败。 */
 int motor_vofa_init(void);
-/* 主循环持续调用，负责串口收发和按周期上传；不可在中断内调用。 */
+/* 主循环持续调用，不可在中断内调用。 */
 void motor_vofa_poll(void);
-/* 编码器模块获取数据后调用；可在主循环或本核中断中调用。
- * position_count：编码器模块提供的计数，可为单圈或累计计数。
- * angle_deg：与该计数同一次采样得到的编码器轴机械角度，单位度。
- * VOFA 不进行减速比、电角度或每圈计数换算，由编码器模块确定角度语义。
- * 返回 0 表示更新成功；非有限角度返回负数并保留上一组有效数据。
- * 未接入编码器前两通道均为 0，不会自动读取编码器硬件。
- * CH0 通过 float 上传，计数绝对值超过 16777216 后可能不能逐计数精确显示。 */
-int motor_vofa_set_encoder(int32_t position_count, float angle_deg);
-
-/* 调试器中查看：0=成功，负数=最近一次串口/初始化或入队操作失败。 */
+/* 复制一次 encoder_read() 返回的完整采样，可从本核前台或中断调用。
+ * 不保留 data 指针；NULL 或非有限浮点值返回负数，上一组有效数据保持不变。
+ * 初始未更新时所有通道为零。CH0 为 float，计数绝对值超过 16777216 后
+ * 可能不能逐计数精确显示；发送数据不会乘减速比或重新计算电角度。 */
+int motor_vofa_set_encoder(const encoder_data_t *data);
 extern volatile int motor_vofa_io_result;
 extern volatile int motor_vofa_publish_result;
-
 #endif /* MOTOR_VOFA_H */

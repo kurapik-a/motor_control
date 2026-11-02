@@ -26,24 +26,30 @@ static vofa_hpm_uart_t uart_port;
 static uint64_t sample_period_cycles;
 static uint64_t last_sample_cycles;
 static bool initialized;
-/* 数据可能由编码器中断更新，短临界区保证计数、角度属于同一次更新。 */
-static volatile int32_t encoder_position_count;
-static volatile float encoder_angle_deg;
+/* 短临界区保证五个通道来自同一次编码器采样。 */
+static volatile encoder_data_t encoder_snapshot;
 
-int motor_vofa_set_encoder(int32_t position_count, float angle_deg)
+static int finite_value(float value)
+{
+    return value >= -FLT_MAX && value <= FLT_MAX;
+}
+
+int motor_vofa_set_encoder(const encoder_data_t *data)
 {
     uint32_t irq_state;
-    /* 同时拦截 NaN 和无穷大，避免 JustFloat 中间件拒收整帧。 */
-    if (!(angle_deg >= -FLT_MAX && angle_deg <= FLT_MAX)) {
+    if (data == 0) {
+        return VOFA_EINVAL;
+    }
+    if (!finite_value(data->mechanical_angle_deg) || !finite_value(data->electrical_angle_deg)
+        || !finite_value(data->speed_counts_per_s) || !finite_value(data->speed_filtered_counts_per_s)
+        || !finite_value(data->speed_rpm) || !finite_value(data->speed_filtered_rpm)) {
         return VOFA_ENONFINITE;
     }
     irq_state = disable_global_irq(CSR_MSTATUS_MIE_MASK);
-    encoder_position_count = position_count;
-    encoder_angle_deg = angle_deg;
+    encoder_snapshot = *data;
     restore_global_irq(irq_state);
     return VOFA_OK;
 }
-
 int motor_vofa_init(void)
 {
     vofa_debug_config_t config;
@@ -96,8 +102,11 @@ void motor_vofa_poll(void)
     /* 前台繁忙时跳过错过的周期，避免集中补发旧帧。 */
     last_sample_cycles = now;
     irq_state = disable_global_irq(CSR_MSTATUS_MIE_MASK);
-    values[0] = (float)encoder_position_count;
-    values[1] = encoder_angle_deg;
+    values[0] = (float)encoder_snapshot.position_count;
+    values[1] = encoder_snapshot.mechanical_angle_deg;
+    values[2] = encoder_snapshot.electrical_angle_deg;
+    values[3] = encoder_snapshot.speed_rpm;
+    values[4] = encoder_snapshot.speed_filtered_rpm;
     restore_global_irq(irq_state);
     motor_vofa_publish_result = vofa_debug_publish(
         &motor_vofa_context, values, MOTOR_VOFA_CHANNEL_COUNT);

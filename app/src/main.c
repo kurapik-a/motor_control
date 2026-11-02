@@ -1,4 +1,4 @@
-/* 编码器移植阶段：主循环读取 QEI0，再把计数和机械角度交给 VOFA 上传。 */
+/* 编码器移植阶段：主循环读取 QEI0，计算角度/速度并交给 VOFA 上传。 */
 #include "board.h"
 #include "encoder.h"
 #include "motor_vofa.h"
@@ -20,7 +20,7 @@ int main(void)
     while (1) {
         encoder_result = encoder_read(&sample);
         if (encoder_result == 0) {
-            motor_vofa_set_encoder(sample.position_count, sample.mechanical_angle_deg);
+            motor_vofa_set_encoder(&sample);
         }
         motor_vofa_poll();
     }
