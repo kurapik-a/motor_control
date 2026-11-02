@@ -32,7 +32,8 @@ add_subdirectory("${HPM_APPS_BASE}" "${CMAKE_BINARY_DIR}/hpm_apps")
 project(motor_control)
 sdk_inc(../motor/inc ../core/inc inc)
 
-sdk_app_src(src/main.c src/motor_vofa.c src/encoder.c)
+sdk_app_src(src/main.c src/motor_vofa.c src/encoder.c
+    src/adc.c)
 
 # 仅延后编译，不删除这些初始化和扩展源码。
 if(MOTOR_CONTROL_BUILD_MOTOR)

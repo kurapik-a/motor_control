@@ -17,6 +17,8 @@ int main(void)
     if (motor_vofa_init() != 0) {
         while (1) { /* 使用调试器查看 motor_vofa_io_result。 */ }
     }
+
+    
     while (1) {
         encoder_result = encoder_read(&sample);
         if (encoder_result == 0) {
