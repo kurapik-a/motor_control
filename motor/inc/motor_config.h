@@ -75,6 +75,8 @@
 #define MOTOR_NORMAL_SPEED_ERROR_LIMIT_COUNTS_S (10.0f * MOTOR_SPI_COUNTS_PER_REV) /* 正常速度误差保护门限，单位计数/秒；保留原来按 SPI 刻度计算的值。 */
 
 /* ===== 7. ADC 电流比例、零偏与 PWM 时序 ===== */
+#define MOTOR_ADC_SAMPLE_HZ 1000u             /* 当前独立采样阶段的软件触发标称频率，Hz；尚未与 PWM 同步。 */
+#define MOTOR_ADC_CONVERSION_TIMEOUT_US 1000u /* 一组转换等待超时，μs；不忙等。 */
 #define MOTOR_ADC_REFERENCE_V 3.3f             /* ADC 参考电压，单位 V；参与电流码值到 mA 的换算。 */
 #define MOTOR_ADC_EFFECTIVE_FULL_SCALE 4095.0f /* 当前取高12位，勿单独改数据格式 */
 #define MOTOR_CURRENT_AMPLIFIER_GAIN 10.0f     /* 电流采样放大倍数，无量纲；需与板上采样电路一致。 */
