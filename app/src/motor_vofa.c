@@ -26,7 +26,7 @@ static vofa_hpm_uart_t uart_port;
 static uint64_t sample_period_cycles;
 static uint64_t last_sample_cycles;
 static bool initialized;
-/* 短临界区保证五个通道来自同一次编码器采样。 */
+/* 短临界区保证上传数据来自同一次编码器采样。 */
 static volatile encoder_data_t encoder_snapshot;
 
 static int finite_value(float value)
@@ -74,7 +74,7 @@ int motor_vofa_init(void)
     vofa_debug_config_default(&config);
     vofa_hpm_uart_bind(&config, &uart_port);
     config.channels = MOTOR_VOFA_CHANNEL_COUNT;
-    /* 当前只上报编码器，不注册电机使能、目标设置或 PID 调参回调。 */
+    /* 当前只上报输出轴数据，不注册电机使能、目标设置或 PID 调参回调。 */
     config.on_command = 0;
     motor_vofa_io_result = vofa_debug_init(&motor_vofa_context, &config);
     if (motor_vofa_io_result != VOFA_OK) {
@@ -89,25 +89,33 @@ void motor_vofa_poll(void)
 {
     uint64_t now;
     float values[MOTOR_VOFA_CHANNEL_COUNT];
+    encoder_data_t sample;
+    encoder_output_data_t output;
     uint32_t irq_state;
+    int conversion_result;
     if (!initialized) {
         return;
     }
-    /* 有界串口轮询；本次新入队的数据可在后续主循环中继续发送。 */
     motor_vofa_io_result = vofa_debug_poll(&motor_vofa_context);
     now = hpm_csr_get_core_cycle();
     if (now - last_sample_cycles < sample_period_cycles) {
         return;
     }
-    /* 前台繁忙时跳过错过的周期，避免集中补发旧帧。 */
+    /* 前台繁忙时跳过错过的周期，不集中补发旧帧。 */
     last_sample_cycles = now;
     irq_state = disable_global_irq(CSR_MSTATUS_MIE_MASK);
-    values[0] = (float)encoder_snapshot.position_count;
-    values[1] = encoder_snapshot.mechanical_angle_deg;
-    values[2] = encoder_snapshot.electrical_angle_deg;
-    values[3] = encoder_snapshot.speed_rpm;
-    values[4] = encoder_snapshot.speed_filtered_rpm;
+    sample = encoder_snapshot;
     restore_global_irq(irq_state);
+
+    /* 在临界区外换算，每个上传周期仅计算一次；不改变电机轴原始数据。 */
+    conversion_result = encoder_to_output_axis(&sample, &output);
+    if (conversion_result != 0) {
+        motor_vofa_publish_result = conversion_result == -3 ? VOFA_ENONFINITE : VOFA_EINVAL;
+        return;
+    }
+    values[0] = output.angle_deg;
+    values[1] = output.speed_rpm;
+    values[2] = output.speed_filtered_rpm;
     motor_vofa_publish_result = vofa_debug_publish(
         &motor_vofa_context, values, MOTOR_VOFA_CHANNEL_COUNT);
 }

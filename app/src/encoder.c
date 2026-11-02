@@ -6,6 +6,7 @@
 #include "hpm_qeiv2_drv.h"
 #include <stdbool.h>
 #include <limits.h>
+#include <float.h>
 
 #define ENCODER_QEI_BASE BOARD_PMSM0_QEI_BASE
 #define ENCODER_QEI_CLOCK BOARD_BLDC_QEI_CLOCK_SOURCE
@@ -152,5 +153,36 @@ int encoder_read(encoder_data_t *data)
     data->speed_filtered_counts_per_s = speed_filtered_counts_per_s;
     data->speed_rpm = speed_counts_per_s * (60.0f / (float)ENCODER_COUNTS_PER_REV);
     data->speed_filtered_rpm = speed_filtered_counts_per_s * (60.0f / (float)ENCODER_COUNTS_PER_REV);
+    return 0;
+}
+
+static bool output_value_finite(float value)
+{
+    return value >= -FLT_MAX && value <= FLT_MAX;
+}
+
+int encoder_to_output_axis(const encoder_data_t *motor, encoder_output_data_t *output)
+{
+    float ratio = MOTOR_SPEED_REDUCTION_RATIO;
+    encoder_output_data_t converted;
+    if (motor == 0 || output == 0) {
+        return -1;
+    }
+    if (!(ratio > 0.0f) || !output_value_finite(ratio)) {
+        return -2;
+    }
+    if (!output_value_finite(motor->mechanical_angle_deg)
+        || !output_value_finite(motor->speed_rpm)
+        || !output_value_finite(motor->speed_filtered_rpm)) {
+        return -3;
+    }
+    converted.angle_deg = motor->mechanical_angle_deg / ratio;
+    converted.speed_rpm = motor->speed_rpm / ratio;
+    converted.speed_filtered_rpm = motor->speed_filtered_rpm / ratio;
+    if (!output_value_finite(converted.angle_deg) || !output_value_finite(converted.speed_rpm)
+        || !output_value_finite(converted.speed_filtered_rpm)) {
+        return -3;
+    }
+    *output = converted;
     return 0;
 }
