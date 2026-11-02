@@ -1,0 +1,23 @@
+# Build output
+build/
+*/build/
+**/*_debug/
+**/*_release/
+**/build_tmp/
+*.obj
+*.elf
+*.map
+*.bin
+*.hex
+*.exe
+.ninja_deps
+.ninja_log
+build.ninja
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
+
+# IDE / OS
+.vscode/.browse.c_cpp.db*
+.DS_Store
+Thumbs.db

@@ -1,0 +1,43 @@
+{
+  "cmake.cmakePath": "C:/Users/Sinx/Documents/Codex/hpm_sdk_env_v1.9.0/tools/cmake/bin/cmake.exe",
+  "cmake.sourceDirectory": "${workspaceFolder}/app",
+  "cmake.configureOnOpen": false,
+  "cmake.useCMakePresets": "never",
+  "cmake.generator": "Ninja",
+  "cmake.buildDirectory": "${workspaceFolder}/build",
+  "cmake.environment": {
+    "HPM_SDK_BASE": "C:/Users/Sinx/Documents/Codex/hpm_sdk_env_v1.9.0/hpm_sdk",
+    "HPM_SDK_TOOLCHAIN_VARIANT": "gcc",
+    "GNURISCV_TOOLCHAIN_PATH": "C:/Users/Sinx/Documents/Codex/hpm_sdk_env_v1.9.0/toolchains/rv32imac_zicsr_zifencei_multilib_b_ext-win",
+    "PYTHONUTF8": "1",
+    "PATH": "C:/Users/Sinx/Documents/Codex/hpm_sdk_env_v1.9.0/tools/cmake/bin;C:/Users/Sinx/Documents/Codex/hpm_sdk_env_v1.9.0/tools/ninja;C:/Users/Sinx/Documents/Codex/hpm_sdk_env_v1.9.0/tools/python3;C:/Users/Sinx/Documents/Codex/hpm_sdk_env_v1.9.0/toolchains/rv32imac_zicsr_zifencei_multilib_b_ext-win/bin;${env:PATH}"
+  },
+  "cmake.configureSettings": {
+    "BOARD": "hpm6e00sip_pmsm",
+    "BOARD_SEARCH_PATH": "${workspaceFolder}/boards",
+    "HPM_APPS_BASE": "C:/Users/Sinx/Documents/Codex/hpm_sdk_env_v1.9.0/hpm_apps",
+    "HPM_BUILD_TYPE": "flash_xip",
+    "CMAKE_MAKE_PROGRAM": "C:/Users/Sinx/Documents/Codex/hpm_sdk_env_v1.9.0/tools/ninja/ninja.exe",
+    "PYTHON_EXECUTABLE": "C:/Users/Sinx/Documents/Codex/hpm_sdk_env_v1.9.0/tools/python3/python.exe",
+    "CMAKE_EXPORT_COMPILE_COMMANDS": true
+  },
+  "C_Cpp.default.compileCommands": "${workspaceFolder}/build/compile_commands.json",
+  "C_Cpp.default.compilerPath": "C:/Users/Sinx/Documents/Codex/hpm_sdk_env_v1.9.0/toolchains/rv32imac_zicsr_zifencei_multilib_b_ext-win/bin/riscv32-unknown-elf-gcc.exe",
+  "files.associations": {
+    "*.h": "c"
+  },
+  "files.exclude": {
+    "**/.git": true,
+    "**/.cache": true
+  },
+  "search.exclude": {
+    "build/**": true,
+    ".cache/**": true
+  },
+  "C_Cpp.files.exclude": {
+    "**/.vscode": true,
+    "**/.vs": true,
+    "**/.cache/**": true,
+    "**/tests/host/**": true
+  }
+}

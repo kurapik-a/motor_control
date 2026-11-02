@@ -1,0 +1,72 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "type": "process",
+      "command": "powershell.exe",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [
+        "$gcc"
+      ],
+      "label": "HPM: Build before debug",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}/build.ps1"
+      ],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      }
+    },
+    {
+      "type": "process",
+      "command": "powershell.exe",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [
+        "$gcc"
+      ],
+      "label": "HPM: Configure",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}/build.ps1",
+        "-ConfigureOnly"
+      ]
+    },
+    {
+      "label": "HPM: Flash and run (J-Link)",
+      "type": "process",
+      "command": "C:/Users/Sinx/Documents/Codex/hpm_sdk_env_v1.9.0/tools/cmake/bin/cmake.exe",
+      "args": [
+        "--build",
+        "${workspaceFolder}/build",
+        "--target",
+        "flash"
+      ],
+      "dependsOn": "HPM: Build before debug",
+      "dependsOrder": "sequence",
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "HPM_SDK_BASE": "C:/Users/Sinx/Documents/Codex/hpm_sdk_env_v1.9.0/hpm_sdk",
+          "HPM_SDK_TOOLCHAIN_VARIANT": "gcc",
+          "GNURISCV_TOOLCHAIN_PATH": "C:/Users/Sinx/Documents/Codex/hpm_sdk_env_v1.9.0/toolchains/rv32imac_zicsr_zifencei_multilib_b_ext-win",
+          "PYTHONUTF8": "1",
+          "PATH": "C:/Users/Sinx/Documents/Codex/hpm_sdk_env_v1.9.0/tools/cmake/bin;C:/Users/Sinx/Documents/Codex/hpm_sdk_env_v1.9.0/tools/ninja;C:/Users/Sinx/Documents/Codex/hpm_sdk_env_v1.9.0/tools/python3;C:/Users/Sinx/Documents/Codex/hpm_sdk_env_v1.9.0/toolchains/rv32imac_zicsr_zifencei_multilib_b_ext-win/bin;${env:PATH}"
+        }
+      },
+      "problemMatcher": [
+        "$gcc"
+      ]
+    }
+  ]
+}

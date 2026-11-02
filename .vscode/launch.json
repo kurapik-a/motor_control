@@ -1,0 +1,25 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "HPM6E80 - Single motor VOFA - J-Link",
+      "servertype": "jlink",
+      "request": "launch",
+      "type": "cortex-debug",
+      "toolchainPrefix": "riscv32-unknown-elf",
+      "serverArgs": [
+        "-speed",
+        "1000"
+      ],
+      "gdbPath": "C:/Users/Sinx/Documents/Codex/hpm_sdk_env_v1.9.0/toolchains/rv32imac_zicsr_zifencei_multilib_b_ext-win/bin/riscv32-unknown-elf-gdb.exe",
+      "armToolchainPath": "C:/Users/Sinx/Documents/Codex/hpm_sdk_env_v1.9.0/toolchains/rv32imac_zicsr_zifencei_multilib_b_ext-win/bin",
+      "executable": "${workspaceFolder}/build/output/demo.elf",
+      "cwd": "${workspaceFolder}",
+      "device": "HPM6E80xVMx",
+      "interface": "jtag",
+      "preLaunchTask": "HPM: Build before debug",
+      "serverpath": "C:/Program Files/SEGGER/JLink_V986a/JLinkGDBServerCL.exe",
+      "runToEntryPoint": "main"
+    }
+  ]
+}
