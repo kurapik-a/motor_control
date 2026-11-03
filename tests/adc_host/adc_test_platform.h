@@ -1,11 +1,13 @@
 #ifndef ADC_TEST_PLATFORM_H
 #define ADC_TEST_PLATFORM_H
+#define ADC_HOST_TEST 1
 #include <stdint.h>
 #include <stdbool.h>
 #define ADC_SOC_PMT_MAX_DMA_BUFF_LEN_IN_4BYTES 40
 #define ADC_SOC_MAX_TRIG_CH_LEN 4
 #define ADC_SOC_DMA_ADDR_ALIGNMENT 4
 #define ATTR_PLACE_AT_NONCACHEABLE_WITH_ALIGNMENT(x)
+#define ATTR_RAMFUNC
 #define BOARD_PMSM0_ADC_U_BASE (&mock_adc[0])
 #define BOARD_PMSM0_ADC_V_BASE (&mock_adc[1])
 #define BOARD_PMSM0_ADC_TRG 0

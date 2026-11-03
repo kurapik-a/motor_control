@@ -11,12 +11,15 @@ ADC16_Type mock_adc[2];
 mock_ioc_t mock_ioc;
 uint32_t hpm_core_clock=1000000;
 static uint64_t now;
+static uint32_t cycle_step,timing_pause;
 static bool gate,enabled,near_edge;
 static unsigned irq_depth,reload_value=10000;
 static int init_fail,aux_fail;
+static unsigned reject_enable_count;
+static void check_arm_prepared(void);
 uint32_t disable_global_irq(uint32_t x){(void)x;++irq_depth;return 0;}
 void restore_global_irq(uint32_t x){(void)x;CHECK(irq_depth);--irq_depth;}
-uint64_t hpm_csr_get_core_cycle(void){return now;}
+uint64_t hpm_csr_get_core_cycle(void){now+=cycle_step;return now;}
 void intc_m_disable_irq(int x){(void)x;}
 void intc_m_enable_irq_with_priority(int x,int p){(void)x;CHECK(p==5);}
 void clock_add_to_group(int x,int g){(void)x;(void)g;}
@@ -34,13 +37,18 @@ void adc16_clear_status_flags(ADC16_Type *p,uint32_t m){p->flags &= ~m;}
 uint32_t adc16_get_status_flags(ADC16_Type *p){return p->flags;}
 void adc16_init_pmt_dma(ADC16_Type *p,uint32_t a){(void)p;(void)a;}
 int adc16_set_prd_config(ADC16_Type *p,adc16_prd_config_t *c){CHECK(p==&mock_adc[0]);CHECK(c->ch==15 || c->ch==1);CHECK(c->prescale==22);if(aux_fail && c->period_count)return -1;p->period_count[c->ch]=c->period_count;p->prescale[c->ch]=c->prescale;return 0;}
-int adc16_get_prd_result(ADC16_Type *p,uint8_t c,uint16_t *v){CHECK(p==&mock_adc[0] && (c==15 || c==1));*v=p->period_results[c];return 0;}
+int adc16_get_prd_result(ADC16_Type *p,uint8_t c,uint16_t *v){CHECK(!irq_depth);CHECK(p==&mock_adc[0] && (c==15 || c==1));*v=p->period_results[c];return 0;}
 bool pwm_is_enabled(void){return enabled;}
 void pwm_disable(void){enabled=false;}
 uint32_t pwm_get_reload(void){return reload_value;}
-int pwm_set_adc_trigger_enabled(bool e){gate=e;return 0;}
-int pwm_get_adc_trigger_timing(uint64_t *t,uint64_t *p){if(near_edge)return 1;*t=now+48;*p=50;return 0;}
+int pwm_set_adc_trigger_enabled(bool e){if(e && reject_enable_count){--reject_enable_count;return 1;}gate=e;return 0;}
+int pwm_get_adc_trigger_timing(uint64_t *t,uint64_t *p){check_arm_prepared();if(near_edge)return 1;*t=now+48;*p=50;now+=timing_pause;return 0;}
 #include "adc.c"
+/* 清理先完成再读取PWM时刻，保护有效采样窗口。 */
+static void check_arm_prepared(void)
+{
+ CHECK(!gate && !dma_u[ADC_DMA_INDEX] && !dma_v[ADC_DMA_INDEX]);
+}
 static void word(volatile uint32_t *buffer,unsigned index,unsigned channel,uint16_t value)
 {
  adc_dma_word_t x;
@@ -125,6 +133,15 @@ int main(void)
  mock_adc[0].flags=1;adc_u_isr();CHECK(latest.sample_count==0);
  mock_adc[1].flags=1;adc_v_isr();CHECK(latest.sample_count==1 && latest.bus_raw==0);
  adc_poll();adc_read(&sample);CHECK(sample.bus_raw==15824 && sample.temperature_raw==7680 && !fault);
+ /* DMA读取结束才到截止点，也不能发布。此处时间步进只用于注入超时。 */
+ reset();cycle_step=1;now=request_cycles+8;data(32768,32768);
+ mock_adc[0].flags=mock_adc[1].flags=1;adc_u_isr();
+ CHECK(adc_read(&sample)==-7 && !sample.sample_count);cycle_step=0;
+ /* 接通前窗口变化或CPU预测已经过期时，保持关路由并重试。 */
+ reject_enable_count=1;CHECK(adc_init()==0 && !gate && !pending && latest.rearm_deferred_count==1);
+ CHECK(adc_poll()==1 && gate && pending);frame(32768,32768);CHECK(!fault);
+ timing_pause=51;CHECK(adc_init()==0 && !gate && !pending && latest.rearm_deferred_count==1);
+ timing_pause=0;CHECK(adc_poll()==1 && gate && pending);frame(32768,32768);CHECK(!fault);
  reload_value=0;CHECK(adc_init()==-3);reload_value=10000;
  init_fail=-1;CHECK(adc_init()==-4);init_fail=0;
  aux_fail=1;CHECK(adc_init()==-4 && !gate && !enabled);aux_fail=0;
