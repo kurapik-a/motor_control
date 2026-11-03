@@ -119,9 +119,52 @@
 #define MOTOR_PROTECT_VOLTAGE_TICKS 2u         /* 母线过压/欠压保护检查间隔，单位外环周期，必须大于 0。 */
 #define MOTOR_PROTECT_TEMP_TICKS 5u            /* 温度 ADC 门限保护检查间隔，单位外环周期，必须大于 0。 */
 #define MOTOR_BUS_OVERVOLTAGE_ADC 34044u       /* ADC 原始码，非直接电压 */
-#define MOTOR_BUS_UNDERVOLTAGE_ADC 0u          /* 目前无有效欠压门限 */
+#ifndef MOTOR_BUS_UNDERVOLTAGE_ADC
+#define MOTOR_BUS_UNDERVOLTAGE_ADC 0u          /* 默认0：无有效欠压门限；仍检查辅助数据有效性。 */
+#endif
 #define MOTOR_TEMP_MAX_ADC 55893u              /* 温度 ADC 原始码上限；采样码大于此值置故障，不是直接摄氏温度。 */
-#define MOTOR_TEMP_MIN_ADC 0u                  /* 温度 ADC 原始码下限；采样码小于此值置故障，当前 0 无有效下限。 */
+#ifndef MOTOR_TEMP_MIN_ADC
+#define MOTOR_TEMP_MIN_ADC 0u                  /* 温度 ADC 原始码下限；默认0：无有效下限。 */
+#endif
+
+/* ===== 正式控制保护模块：pmsm_protect.c，独立于adc/pwm_test现有保护 =====
+ * 当前加入编译，待正式控制层接入快照及故障关桥；不接管现有开环测试。
+ * 每次调用检查，不使用上方旧*_TICKS计数；全部阈值与使能开关在此配置。 */
+#ifndef MOTOR_PROTECT_PHASE_ENABLE
+#define MOTOR_PROTECT_PHASE_ENABLE 1
+#endif
+#ifndef MOTOR_PROTECT_DQ_ENABLE
+#define MOTOR_PROTECT_DQ_ENABLE 0 /* 接入Clarke/Park及Id/Iq有效标志后再开启。 */
+#endif
+#ifndef MOTOR_PROTECT_ENCODER_ENABLE
+#define MOTOR_PROTECT_ENCODER_ENABLE 1 /* 有效性/新鲜度及正负实际超速；位置为0不是断线。 */
+#endif
+#ifndef MOTOR_PROTECT_SPEED_ERROR_ENABLE
+#define MOTOR_PROTECT_SPEED_ERROR_ENABLE 0 /* 接入速度闭环后再开，仅speed_loop_active时检查。 */
+#endif
+#ifndef MOTOR_PROTECT_BUS_ENABLE
+#define MOTOR_PROTECT_BUS_ENABLE 1 /* 阈值使用上方MOTOR_BUS_*，输入必须有独立valid和年龄。 */
+#endif
+#ifndef MOTOR_PROTECT_TEMP_ENABLE
+#define MOTOR_PROTECT_TEMP_ENABLE 1 /* 阈值使用上方MOTOR_TEMP_*，仍为ADC码，非摄氏度。 */
+#endif
+#define MOTOR_PROTECT_PHASE_LIMIT_MA ((float)MOTOR_NORMAL_CURRENT_TRIP_MA) /* 沿用原正常门限，当前30000mA；不引用测试参数。 */
+#define MOTOR_PROTECT_DQ_LIMIT_MA ((float)MOTOR_NORMAL_CURRENT_TRIP_MA) /* Id/Iq绝对值门限。 */
+#define MOTOR_PROTECT_SPEED_LIMIT_COUNTS_S (MOTOR_MAX_SPEED_RPS * MOTOR_ABZ_COUNTS_PER_REV) /* 电机轴20r/s，当前AB每圈4000计数。 */
+#define MOTOR_PROTECT_CURRENT_MAX_AGE_US 100u /* 电流数据最大年龄，微秒。 */
+#define MOTOR_PROTECT_ENCODER_MAX_AGE_MS 5u /* 编码器数据最大年龄，毫秒。 */
+#define MOTOR_PROTECT_AUX_MAX_AGE_MS 500u /* 母线/温度最大年龄，毫秒；应大于独立采样周期。 */
+#if (MOTOR_PROTECT_PHASE_ENABLE != 0 && MOTOR_PROTECT_PHASE_ENABLE != 1) || \
+    (MOTOR_PROTECT_DQ_ENABLE != 0 && MOTOR_PROTECT_DQ_ENABLE != 1) || \
+    (MOTOR_PROTECT_ENCODER_ENABLE != 0 && MOTOR_PROTECT_ENCODER_ENABLE != 1) || \
+    (MOTOR_PROTECT_SPEED_ERROR_ENABLE != 0 && MOTOR_PROTECT_SPEED_ERROR_ENABLE != 1) || \
+    (MOTOR_PROTECT_BUS_ENABLE != 0 && MOTOR_PROTECT_BUS_ENABLE != 1) || \
+    (MOTOR_PROTECT_TEMP_ENABLE != 0 && MOTOR_PROTECT_TEMP_ENABLE != 1)
+#error "Protection enable switches must be 0 or 1"
+#endif
+#if MOTOR_PROTECT_SPEED_ERROR_ENABLE && !MOTOR_PROTECT_ENCODER_ENABLE
+#error "Speed-error protection requires encoder protection"
+#endif
 
 /* ===== 9. VOFA 参数：通道数见 motor_vofa.h，改波特率后上位机也需同步 ===== */
 #ifndef MOTOR_VOFA_BAUDRATE

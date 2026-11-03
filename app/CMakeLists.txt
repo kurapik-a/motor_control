@@ -34,7 +34,8 @@ sdk_inc(../motor/inc ../core/inc inc)
 
 sdk_app_src(src/main.c src/motor_vofa.c src/encoder.c
     src/adc.c
-    src/pwm.c src/pwm_test.c ../motor/src/pmsm_control.c ../motor/src/pid.c)
+    src/pwm.c src/pwm_test.c ../motor/src/pmsm_control.c ../motor/src/pid.c
+    ../motor/src/pmsm_protect.c)
 # PI为独立纯算法；电压开环由调试器/VOFA请求启动，不调用PI、不自动使能桥臂。
 
 # 仅延后编译，不删除这些初始化和扩展源码。
