@@ -1,4 +1,4 @@
-/* 编码器、ADC、PWM 独立移植阶段：PWM 初始化后保持桥臂关闭，VOFA 仍上传输出轴数据。 */
+/* PWM同步ADC采样阶段：桥臂保持关闭，主循环读取快照，VOFA仍上传输出轴数据。 */
 #include "board.h"
 #include "encoder.h"
 #include "adc.h"
@@ -51,7 +51,7 @@ int main(void)
         {
             motor_vofa_set_encoder(&sample);
         }
-        adc_poll();
+        adc_poll(); /* ADC由PWM硬件触发；这里只检查健康状态和处理必要重试。 */
         adc_result = adc_read(&adc_data);
         adc_sample = adc_data;
         motor_vofa_poll();

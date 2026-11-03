@@ -6,6 +6,8 @@
 #include "hpm_clock_drv.h"
 #include "hpm_csr_drv.h"
 #include "hpm_interrupt.h"
+#include "hpm_trgm_drv.h"
+extern uint32_t hpm_core_clock;
 
 static uint32_t reload;
 static bool initialized;
@@ -185,7 +187,8 @@ int pwm_init(void)
     init_trigger(BOARD_PMSM0_PWM_TRIG_CMP_INDEX, 9, BOARD_PMSM0_PWM_TRIGOUT_CH_ADC, reload - 1u);
     init_trigger(BOARD_PMSM0_PWM_TRIG_CMP_INDEX_CURRENTLOOP, 10, BOARD_PMSM0_PWM_TRIGOUT_CH_CURRENTLOOP,
                  MOTOR_PWM_CURRENT_ISR_DELAY_TICKS);
-    /* 只映射实际功率输出；ADC 仍软件触发，不在这里连接 TRGM 硬件采样路由。 */
+    pwm_set_adc_trigger_enabled(false); /* 采样路由先关闭，由adc_init配置完成后重臂。 */
+    /* 六路功率输出仍保持强制低电平。 */
     HPM_IOC->PAD[IOC_PAD_PE00].FUNC_CTL = IOC_PE00_FUNC_CTL_PWM0_P_0;
     HPM_IOC->PAD[IOC_PAD_PE01].FUNC_CTL = IOC_PE01_FUNC_CTL_PWM0_P_1;
     HPM_IOC->PAD[IOC_PAD_PE02].FUNC_CTL = IOC_PE02_FUNC_CTL_PWM0_P_2;
@@ -229,3 +232,32 @@ static void pwm_current_loop_isr(void)
     }
 }
 SDK_DECLARE_EXT_ISR_M(BOARD_PMSM0APP_PWM_IRQ, pwm_current_loop_isr)
+
+/* TRGO0 同时送到ADC0/ADC1的TRIG0A，关闭时将路由接恒低输入；由adc.c独占管理。 */
+int pwm_set_adc_trigger_enabled(bool enable)
+{
+    if (!initialized) return -1;
+    trgm_output_t route = {0};
+    route.type = trgm_output_same_as_input;
+    route.input = enable ? BOARD_PMSM0_TRIGMUX_IN_NUM : HPM_TRGM0_INPUT_SRC_VSS;
+    trgm_output_config(BOARD_PMSM0PWM_TRGM, BOARD_PMSM0_TRG_NUM, &route);
+    fenceiorw();
+    return 0;
+}
+
+/* 在调用方短临界区内取得下一个采样边沿的保守时刻；不在边沿附近切换路由。
+ * 用读计数器之前的CPU时刻计算，截止时间略早，不会把下一周期数据误判为本周期。 */
+int pwm_get_adc_trigger_timing(uint64_t *trigger_cycles, uint64_t *period_cycles)
+{
+    if (!initialized) return -1;
+    if (!trigger_cycles || !period_cycles) return -3;
+    uint32_t hz = clock_get_frequency(BOARD_STEPPER0_MOTOR_CLOCK_SOURCE);
+    if (!hz || !hpm_core_clock || reload <= MOTOR_ADC_TRIGGER_GUARD_TICKS + 2u) return -2;
+    uint64_t before = hpm_csr_get_core_cycle();
+    uint32_t count = pwmv2_get_counter_value(BOARD_PMSM0PWM, pwm_counter_0);
+    uint32_t point = reload - 1u;
+    if (count < 2u || count >= point - MOTOR_ADC_TRIGGER_GUARD_TICKS) return 1;
+    *trigger_cycles = before + (uint64_t)(point - count) * hpm_core_clock / hz;
+    *period_cycles = (uint64_t)reload * hpm_core_clock / hz;
+    return 0;
+}
