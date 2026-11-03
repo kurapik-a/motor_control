@@ -157,7 +157,7 @@ int adc_init(void)
     if (hz < MOTOR_ADC_SAMPLE_HZ || MOTOR_ADC_CLOCK_DIVIDER == 0u ||
         MOTOR_CURRENT_OFFSET_INTERVAL_MS == 0u ||
         !positive_finite(MOTOR_ADC_REFERENCE_V) ||
-        MOTOR_ADC_EFFECTIVE_FULL_SCALE != 4095.0f ||
+        MOTOR_ADC_EFFECTIVE_FULL_SCALE != 65535.0f ||
         !positive_finite(MOTOR_CURRENT_AMPLIFIER_GAIN) ||
         !positive_finite(MOTOR_SHUNT_RESISTANCE_OHM))
     {
@@ -165,7 +165,7 @@ int adc_init(void)
     }
     ma_per_count = MOTOR_ADC_REFERENCE_V * 1000.0f /
                    (MOTOR_ADC_EFFECTIVE_FULL_SCALE * MOTOR_CURRENT_AMPLIFIER_GAIN * MOTOR_SHUNT_RESISTANCE_OHM);
-    if (!positive_finite(ma_per_count) || ma_per_count > FLT_MAX / 8190.0f)
+    if (!positive_finite(ma_per_count) || ma_per_count > FLT_MAX / 131070.0f)
     {
         return latch_fault(-3);
     }
@@ -224,8 +224,8 @@ static void update_sample(uint16_t u, uint16_t v, uint16_t bus, uint16_t tempera
     latest.capture_cycles = request_cycles;
     ++latest.sample_count;
     latest.sample_valid = true;
-    latest.current_clipped = latest.raw_u == 0u || latest.raw_u == 4095u ||
-                             latest.raw_v == 0u || latest.raw_v == 4095u;
+    latest.current_clipped = latest.raw_u == 0u || latest.raw_u == 65535u ||
+                             latest.raw_v == 0u || latest.raw_v == 65535u;
     if (latest.offset_state == ADC_OFFSET_SETTLING && request_cycles - calibration_started >= settle_cycles)
     {
         latest.offset_state = ADC_OFFSET_COLLECTING;

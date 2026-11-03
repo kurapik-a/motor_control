@@ -16,21 +16,31 @@ int main(void)
     adc_data_t adc_data;
     board_init();
     encoder_result = encoder_init();
-    if (encoder_result != 0) {
-        while (1) { /* 检查 QEI 时钟和 encoder_result。 */ }
+    if (encoder_result != 0)
+    {
+        while (1)
+        { /* 检查 QEI 时钟和 encoder_result。 */
+        }
     }
     adc_result = adc_init();
-    if (adc_result < 0) {
-        while (1) { /* 检查 adc_result；尚未启动 PWM。 */ }
+    if (adc_result < 0)
+    {
+        while (1)
+        { /* 检查 adc_result；尚未启动 PWM。 */
+        }
     }
-    if (motor_vofa_init() != 0) {
-        while (1) { /* 使用调试器查看 motor_vofa_io_result。 */ }
+    if (motor_vofa_init() != 0)
+    {
+        while (1)
+        { /* 使用调试器查看 motor_vofa_io_result。 */
+        }
     }
 
-    
-    while (1) {
+    while (1)
+    {
         encoder_result = encoder_read(&sample);
-        if (encoder_result == 0) {
+        if (encoder_result == 0)
+        {
             motor_vofa_set_encoder(&sample);
         }
         adc_poll();
