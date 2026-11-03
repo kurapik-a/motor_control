@@ -66,13 +66,13 @@ int main(void) {
  CHECK(!enabled && pwm_test_monitor.result==PWM_TEST_ADC_STALE);
  pwm_test_poll(); CHECK(!callback);
  fresh(); CHECK(pwm_test_start(1,.01f,1500)==0);
- input.current_u_ma=1001; input.current_v_ma=-200; input.current_w_ma=-801;
+ input.current_u_ma=MOTOR_PWM_TEST_CURRENT_LIMIT_MA+1; input.current_v_ma=-200; input.current_w_ma=199-MOTOR_PWM_TEST_CURRENT_LIMIT_MA;
  input.raw_u=31000; input.raw_v=33000; input.offset_u=32700; input.offset_v=32710;
  fresh(); pwm_test_poll(); CHECK(!enabled && pwm_test_monitor.result==PWM_TEST_OVERCURRENT);
- CHECK(pwm_test_monitor.peak_current_ma==1001);
+ CHECK(pwm_test_monitor.peak_current_ma==MOTOR_PWM_TEST_CURRENT_LIMIT_MA+1);
  CHECK(pwm_test_monitor.trip.valid && pwm_test_monitor.trip.during_run);
- CHECK(pwm_test_monitor.trip.source_mask==1 && pwm_test_monitor.trip.limit_ma==1000);
- CHECK(pwm_test_monitor.trip.current_u_ma==1001 && pwm_test_monitor.trip.current_w_ma==-801);
+ CHECK(pwm_test_monitor.trip.source_mask==1 && pwm_test_monitor.trip.limit_ma==MOTOR_PWM_TEST_CURRENT_LIMIT_MA);
+ CHECK(pwm_test_monitor.trip.current_u_ma==MOTOR_PWM_TEST_CURRENT_LIMIT_MA+1 && pwm_test_monitor.trip.current_w_ma==199-MOTOR_PWM_TEST_CURRENT_LIMIT_MA);
  CHECK(pwm_test_monitor.trip.raw_u==31000 && pwm_test_monitor.trip.offset_u==32700);
  CHECK(pwm_test_monitor.trip.sample_count==input.sample_count);
  pwm_test_stop(); CHECK(pwm_test_monitor.trip.valid);
@@ -84,7 +84,7 @@ int main(void) {
  CHECK(pwm_test_start(1,.01f,1500)==PWM_TEST_OVERCURRENT && !enabled);
  CHECK(pwm_test_monitor.trip.valid && !pwm_test_monitor.trip.during_run);
  CHECK(pwm_test_monitor.trip.source_mask==9);
- input.current_u_ma=1001; input.current_w_ma=-1001; fresh();
+ input.current_u_ma=MOTOR_PWM_TEST_CURRENT_LIMIT_MA+1; input.current_w_ma=-(MOTOR_PWM_TEST_CURRENT_LIMIT_MA+1); fresh();
  CHECK(pwm_test_start(1,.01f,1500)==PWM_TEST_OVERCURRENT);
  CHECK(pwm_test_monitor.trip.source_mask==5);
  input.current_u_ma=0; input.current_w_ma=0; input.current_clipped=true;
