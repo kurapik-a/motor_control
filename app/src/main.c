@@ -30,6 +30,13 @@ int main(void)
         { /* 检查 QEI 时钟和 encoder_result。 */
         }
     }
+    /* 串口等可能耗时的初始化先完成，再启动带微秒级截止时间的同步采样。 */
+    if (motor_vofa_init() != 0)
+    {
+        while (1)
+        { /* 使用调试器查看 motor_vofa_io_result。 */
+        }
+    }
     adc_result = adc_init();
     if (adc_result < 0)
     {
@@ -37,23 +44,17 @@ int main(void)
         { /* 检查 adc_result；PWM 桥臂保持关闭。 */
         }
     }
-    if (motor_vofa_init() != 0)
-    {
-        while (1)
-        { /* 使用调试器查看 motor_vofa_io_result。 */
-        }
-    }
 
     while (1)
     {
+        adc_poll(); /* 先处理首次/延期重臂；采样仍由PWM硬件触发。 */
+        adc_result = adc_read(&adc_data);
+        adc_sample = adc_data;
         encoder_result = encoder_read(&sample);
         if (encoder_result == 0)
         {
             motor_vofa_set_encoder(&sample);
         }
-        adc_poll(); /* ADC由PWM硬件触发；这里只检查健康状态和处理必要重试。 */
-        adc_result = adc_read(&adc_data);
-        adc_sample = adc_data;
         motor_vofa_poll();
     }
 }

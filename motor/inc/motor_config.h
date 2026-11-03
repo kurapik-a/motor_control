@@ -90,8 +90,8 @@
 #define MOTOR_CURRENT_OFFSET_INTERVAL_MS 1u    /* 零偏标定相邻样本的等待时间，单位 ms。 */
 #define MOTOR_PWM_DEADTIME_HALF_TICKS 200u     /* 驱动的半周期计数单位 */
 #define MOTOR_PWM_CURRENT_ISR_DELAY_TICKS 200u /* 不是 ADC/DMA 完成保证 */
-#define MOTOR_ADC_AUX_PERIOD_PRESCALE 22u      /* 辅助 ADC 周期采样硬件预分频字段；按芯片寄存器定义解释，不是 Hz。 */
-#define MOTOR_ADC_AUX_PERIOD_COUNT 5u          /* 辅助 ADC 周期采样硬件周期计数字段；配合预分频及 ADC 时钟决定周期。 */
+#define MOTOR_ADC_AUX_PERIOD_PRESCALE 22u      /* 母线/温度独立周期采样，沿用原工程：周期时基预分频2^22，不是Hz。 */
+#define MOTOR_ADC_AUX_PERIOD_COUNT 5u          /* 母线/温度周期计数5；200MHz时基下约104.86ms一次，不随20kHz电流采样更新。 */
 
 /* ===== PWM 开环验证：上电不自动运行，参数均为试验上限 ===== */
 #define MOTOR_PWM_TEST_ELECTRICAL_HZ 1.0f      /* 默认电角频率 Hz，正负改变相序；不是输出轴 rpm。 */

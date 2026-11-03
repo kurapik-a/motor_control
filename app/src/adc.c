@@ -22,12 +22,16 @@
 #if MOTOR_ADC_CONVERSION_TIMEOUT_US == 0
 #error "ADC sample frequency and timeout must be positive"
 #endif
-#if ADC_DMA_INDEX + 3 > ADC_DMA_WORDS
+#if ADC_DMA_INDEX >= ADC_DMA_WORDS
 #error "ADC DMA buffer cannot hold the selected trigger queue"
+#endif
+#if MOTOR_ADC_AUX_PERIOD_PRESCALE > 31u || MOTOR_ADC_AUX_PERIOD_COUNT == 0 || MOTOR_ADC_AUX_PERIOD_COUNT > 255u
+#error "Invalid auxiliary ADC period configuration"
 #endif
 
 /* DMA 必须能访问系统地址，且不能读到 CPU 缓存中的旧数据。
- * 每个触发队列占 4 个字；ADC0 使用 [U,母线,温度]，ADC1 仅使用 [V]。 */
+ * 每个触发队列占 4 个字；ADC0仅使用[U]，ADC1仅使用[V]，各取第一个字。
+ * 母线和温度沿用原工程的ADC0低优先级周期采样，不进入PWM触发队列。 */
 ATTR_PLACE_AT_NONCACHEABLE_WITH_ALIGNMENT(ADC_SOC_DMA_ADDR_ALIGNMENT)
 static volatile uint32_t dma_u[ADC_DMA_WORDS];
 ATTR_PLACE_AT_NONCACHEABLE_WITH_ALIGNMENT(ADC_SOC_DMA_ADDR_ALIGNMENT)
@@ -42,6 +46,8 @@ typedef union
 extern uint32_t hpm_core_clock;
 static adc_data_t latest;
 static bool initialized, pending, hardware_ready;
+/* 首次重臂若延期，从前台首次接管时开始监视；不把其它外设初始化算成采样停滞。 */
+static bool rearm_watch_started;
 static uint8_t completion_mask;
 static int fault;
 static float ma_per_count;
@@ -84,7 +90,7 @@ static int init_channel(ADC16_Type *ptr, uint8_t channel, uint32_t cycles)
     return adc16_init_channel(ptr, &cfg) == status_success ? 0 : -4;
 }
 
-static int init_converter(ADC16_Type *ptr, bool with_aux)
+static int init_converter(ADC16_Type *ptr, uint8_t current_channel)
 {
     adc16_config_t cfg;
     adc16_pmt_config_t queue = {0};
@@ -101,21 +107,11 @@ static int init_converter(ADC16_Type *ptr, bool with_aux)
     /* 每路队列最后一项产生完成中断，两路都完成后才发布。 */
     adc16_disable_interrupts(ptr, UINT32_MAX);
     queue.trig_ch = ADC_TRIGGER;
-    queue.trig_len = with_aux ? 3u : 1u;
-    queue.adc_ch[0] = with_aux ? BOARD_PMSM0_ADC_CH_U : BOARD_PMSM0_ADC_CH_V;
+    queue.trig_len = 1u;
+    queue.adc_ch[0] = current_channel;
     if (init_channel(ptr, queue.adc_ch[0], MOTOR_ADC_CURRENT_SAMPLE_CYCLES) != 0)
     {
         return -4;
-    }
-    if (with_aux)
-    {
-        queue.adc_ch[1] = BOARD_APP_ADC16_UDC_CH;
-        queue.adc_ch[2] = BOARD_APP_ADC16_TEMP_CH;
-        if (init_channel(ptr, queue.adc_ch[1], MOTOR_ADC_AUX_SAMPLE_CYCLES) != 0 ||
-            init_channel(ptr, queue.adc_ch[2], MOTOR_ADC_AUX_SAMPLE_CYCLES) != 0)
-        {
-            return -4;
-        }
     }
     queue.inten[queue.trig_len - 1u] = true;
     if (adc16_set_pmt_config(ptr, &queue) != status_success ||
@@ -125,6 +121,37 @@ static int init_converter(ADC16_Type *ptr, bool with_aux)
     }
     adc16_clear_status_flags(ptr, UINT32_MAX);
     return 0;
+}
+
+/* 与原工程相同：ADC0 CH15母线、CH1温度，硬件周期计数；0可在重初始化前停采。
+ * 电流抢占队列优先；两类采样共用ADC0，不重复初始化转换器或切换全局时钟。 */
+static int set_aux_periods(uint8_t period_count)
+{
+    adc16_prd_config_t cfg = {0};
+    cfg.prescale = MOTOR_ADC_AUX_PERIOD_PRESCALE;
+    cfg.period_count = period_count;
+    cfg.ch = BOARD_APP_ADC16_UDC_CH;
+    if (adc16_set_prd_config(BOARD_APP_ADC16_BASE, &cfg) != status_success) return -4;
+    cfg.ch = BOARD_APP_ADC16_TEMP_CH;
+    return adc16_set_prd_config(BOARD_APP_ADC16_BASE, &cfg) == status_success ? 0 : -4;
+}
+
+static int init_aux_channels(void)
+{
+    if (init_channel(BOARD_APP_ADC16_BASE, BOARD_APP_ADC16_UDC_CH, MOTOR_ADC_AUX_SAMPLE_CYCLES) != 0 ||
+        init_channel(BOARD_APP_ADC16_BASE, BOARD_APP_ADC16_TEMP_CH, MOTOR_ADC_AUX_SAMPLE_CYCLES) != 0)
+        return -4;
+    return set_aux_periods(MOTOR_ADC_AUX_PERIOD_COUNT);
+}
+
+/* 前台只读周期结果寄存器；不发起转换，也不等待两项与电流同一时刻更新。 */
+static void read_aux_results(void)
+{
+    uint16_t value;
+    if (adc16_get_prd_result(BOARD_APP_ADC16_BASE, BOARD_APP_ADC16_UDC_CH, &value) == status_success)
+        latest.bus_raw = value;
+    if (adc16_get_prd_result(BOARD_APP_ADC16_BASE, BOARD_APP_ADC16_TEMP_CH, &value) == status_success)
+        latest.temperature_raw = value;
 }
 
 static int read_dma_word(volatile uint32_t *buffer, uint8_t index, uint8_t channel, uint16_t *result)
@@ -143,12 +170,10 @@ static int read_dma_word(volatile uint32_t *buffer, uint8_t index, uint8_t chann
     return 0;
 }
 
-static void update_sample(uint16_t u, uint16_t v, uint16_t bus, uint16_t temperature)
+static void update_sample(uint16_t u, uint16_t v)
 {
     latest.raw_u = u;
     latest.raw_v = v;
-    latest.bus_raw = bus;
-    latest.temperature_raw = temperature;
     latest.capture_cycles = request_cycles;
     ++latest.sample_count;
     latest.sample_valid = true;
@@ -198,7 +223,7 @@ static int arm_frame(void)
     if (result == 1) { ++latest.rearm_deferred_count; return 1; }
     if (result != 0 || timeout_cycles >= period) return latch_fault(-3);
     /* 路由仍关闭且上一组DMA已完成，清标识后才允许下一个硬件边沿。 */
-    dma_u[ADC_DMA_INDEX] = dma_u[ADC_DMA_INDEX + 1u] = dma_u[ADC_DMA_INDEX + 2u] = 0;
+    dma_u[ADC_DMA_INDEX] = 0;
     dma_v[ADC_DMA_INDEX] = 0;
     adc16_clear_status_flags(ADC_U, UINT32_MAX);
     adc16_clear_status_flags(ADC_V, UINT32_MAX);
@@ -206,6 +231,7 @@ static int arm_frame(void)
     request_cycles = expected;
     frame_deadline = expected + timeout_cycles;
     pending = true;
+    rearm_watch_started = true;
     latest.trigger_armed = true;
     fenceiorw();
     if (pwm_set_adc_trigger_enabled(true) != 0) return latch_fault(-3);
@@ -217,9 +243,14 @@ static int service_frame(void)
 {
     if (!initialized || fault) return current_status();
     if (!pending) {
+        if (!rearm_watch_started) {
+            last_progress_cycles = hpm_csr_get_core_cycle();
+            rearm_watch_started = true;
+        }
         /* PWM停止在保护窗口或前台迟迟不能重臂，也不能永远返回旧的有效采样。 */
         if (hpm_csr_get_core_cycle() - last_progress_cycles > rearm_timeout_cycles) {
             ++latest.timeout_count;
+            latest.timeout_stage = ADC_TIMEOUT_REARM;
             return latch_fault(-7);
         }
         arm_frame();
@@ -243,23 +274,23 @@ static int service_frame(void)
     /* 截止时间小于PWM周期；迟到的数据不读取、不作为同一轮采样发布。 */
     if (hpm_csr_get_core_cycle() >= frame_deadline) {
         ++latest.timeout_count;
+        latest.timeout_stage = ADC_TIMEOUT_FRAME;
+        latest.timeout_completion_mask = completion_mask;
         return latch_fault(-7);
     }
     if (completion_mask != 3u) return current_status();
-    uint16_t values[4];
-    int states[4];
+    uint16_t values[2];
+    int states[2];
     fenceiorw();
     states[0] = read_dma_word(dma_u, 0, BOARD_PMSM0_ADC_CH_U, &values[0]);
     states[1] = read_dma_word(dma_v, 0, BOARD_PMSM0_ADC_CH_V, &values[1]);
-    states[2] = read_dma_word(dma_u, 1, BOARD_APP_ADC16_UDC_CH, &values[2]);
-    states[3] = read_dma_word(dma_u, 2, BOARD_APP_ADC16_TEMP_CH, &values[3]);
-    for (uint32_t i = 0; i < 4; ++i) if (states[i] < 0) return latch_fault(states[i]);
-    if ((states[0] | states[1] | states[2] | states[3]) != 0) {
+    for (uint32_t i = 0; i < 2; ++i) if (states[i] < 0) return latch_fault(states[i]);
+    if ((states[0] | states[1]) != 0) {
         ++latest.dma_wait_count;
         return current_status();
     }
     pending = false;
-    update_sample(values[0], values[1], values[2], values[3]);
+    update_sample(values[0], values[1]);
     latest.publish_cycles = hpm_csr_get_core_cycle();
     last_progress_cycles = latest.publish_cycles;
     if (latest.offset_state == ADC_OFFSET_FAILED) return latch_fault(-5);
@@ -292,6 +323,7 @@ int adc_init(void)
     intc_m_disable_irq(IRQn_ADC0);
     intc_m_disable_irq(IRQn_ADC1);
     initialized = pending = hardware_ready = false;
+    rearm_watch_started = false;
     fault = 0;
     memset(&latest, 0, sizeof latest);
     uint32_t hz = hpm_core_clock;
@@ -321,7 +353,10 @@ int adc_init(void)
     HPM_IOC->PAD[IOC_PAD_PF06].FUNC_CTL = IOC_PAD_FUNC_CTL_ANALOG_MASK;
     HPM_IOC->PAD[IOC_PAD_PF08].FUNC_CTL = IOC_PAD_FUNC_CTL_ANALOG_MASK;
     board_init_adc16_pins();
-    if (init_converter(ADC_U, true) != 0 || init_converter(ADC_V, false) != 0) {
+    /* 先关闭可能由上一次初始化留下的周期采样，再校准/配置转换器。 */
+    if (set_aux_periods(0) != 0 ||
+        init_converter(ADC_U, BOARD_PMSM0_ADC_CH_U) != 0 ||
+        init_converter(ADC_V, BOARD_PMSM0_ADC_CH_V) != 0 || init_aux_channels() != 0) {
         latch_fault(-4); restore_global_irq(state); return -4;
     }
     hardware_ready = true;
@@ -345,6 +380,7 @@ int adc_poll(void)
 {
     uint32_t state = disable_global_irq(CSR_MSTATUS_MIE_MASK);
     int result = service_frame();
+    if (initialized && !fault) read_aux_results();
     restore_global_irq(state);
     return result;
 }
