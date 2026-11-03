@@ -9,6 +9,10 @@
 #include <stdbool.h>
 #include <float.h>
 
+/* 编码器快照的短临界区从ILM执行，避免Flash取指导致ADC完成中断长时间等待。 */
+int motor_vofa_set_encoder(const encoder_data_t *data) ATTR_RAMFUNC;
+void motor_vofa_poll(void) ATTR_RAMFUNC;
+
 #if MOTOR_VOFA_SAMPLE_HZ == 0
 #error "VOFA upload frequency must be positive"
 #endif

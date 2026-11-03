@@ -1,7 +1,20 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
+/* 实时采样路径即使在Debug构建也使用O2；其余文件仍保留原调试优化级别。
+ * 必须放在SDK内联函数定义之前，避免无优化调用开销挤占微秒级窗口。 */
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC optimize ("O2")
+#endif
 #include "adc.h"
+#if defined(__GNUC__) && !defined(ADC_HOST_TEST)
+/* 属性必须在SDK定义之前声明；事后添加section不能移动已定义的静态函数。 */
+static inline __attribute__((always_inline)) uint64_t hpm_csr_get_core_cycle(void);
+#endif
 #include "pwm.h"
 #include "hpm_soc.h"
+#if defined(__GNUC__) && !defined(ADC_HOST_TEST)
+static inline __attribute__((always_inline)) uint32_t adc16_get_status_flags(ADC16_Type *ptr);
+static inline __attribute__((always_inline)) void adc16_clear_status_flags(ADC16_Type *ptr, uint32_t mask);
+#endif
 #include "hpm_interrupt.h"
 #include "board.h"
 #include "hpm_adc16_drv.h"
@@ -55,6 +68,20 @@ static uint64_t timeout_cycles, settle_cycles, offset_interval_cycles;
 static uint64_t request_cycles, frame_deadline, calibration_started, last_offset_cycles;
 static uint64_t offset_sum_u, offset_sum_v;
 static uint64_t last_progress_cycles, rearm_timeout_cycles;
+
+/* 中断入口虽然在ILM，普通helper仍可能在XIP Flash；整条实时调用链需放入.fast。
+ * SDK链接脚本会在启动时复制.fast到ILM；关键SDK寄存器操作在上方强制内联。 */
+static int current_status(void) ATTR_RAMFUNC;
+static int latch_fault(int code) ATTR_RAMFUNC;
+static int read_dma_word(volatile uint32_t *buffer, uint8_t index, uint8_t channel, uint16_t *result) ATTR_RAMFUNC;
+static void update_sample(uint16_t u, uint16_t v) ATTR_RAMFUNC;
+static int arm_frame(void) ATTR_RAMFUNC;
+static int service_frame(void) ATTR_RAMFUNC;
+static void read_aux_results(void) ATTR_RAMFUNC;
+int adc_init(void) ATTR_RAMFUNC;
+int adc_poll(void) ATTR_RAMFUNC;
+int adc_read(adc_data_t *data) ATTR_RAMFUNC;
+int adc_start_offset_calibration(void) ATTR_RAMFUNC;
 
 static bool positive_finite(float value) { return value > 0.0f && value <= FLT_MAX; }
 static int current_status(void)
@@ -147,11 +174,16 @@ static int init_aux_channels(void)
 /* 前台只读周期结果寄存器；不发起转换，也不等待两项与电流同一时刻更新。 */
 static void read_aux_results(void)
 {
-    uint16_t value;
-    if (adc16_get_prd_result(BOARD_APP_ADC16_BASE, BOARD_APP_ADC16_UDC_CH, &value) == status_success)
-        latest.bus_raw = value;
-    if (adc16_get_prd_result(BOARD_APP_ADC16_BASE, BOARD_APP_ADC16_TEMP_CH, &value) == status_success)
-        latest.temperature_raw = value;
+    uint16_t bus, temperature;
+    /* SDK周期结果读取可能从Flash执行，放在全局开中断区间，不能拖延电流完成中断。 */
+    int bus_status = adc16_get_prd_result(BOARD_APP_ADC16_BASE, BOARD_APP_ADC16_UDC_CH, &bus);
+    int temp_status = adc16_get_prd_result(BOARD_APP_ADC16_BASE, BOARD_APP_ADC16_TEMP_CH, &temperature);
+    uint32_t state = disable_global_irq(CSR_MSTATUS_MIE_MASK);
+    if (initialized && !fault) {
+        if (bus_status == status_success) latest.bus_raw = bus;
+        if (temp_status == status_success) latest.temperature_raw = temperature;
+    }
+    restore_global_irq(state);
 }
 
 static int read_dma_word(volatile uint32_t *buffer, uint8_t index, uint8_t channel, uint16_t *result)
@@ -218,23 +250,36 @@ static void update_sample(uint16_t u, uint16_t v)
 /* 返回1表示接近PWM边沿；稍后重试，不忙等。 */
 static int arm_frame(void)
 {
-    uint64_t expected, period;
-    int result = pwm_get_adc_trigger_timing(&expected, &period);
-    if (result == 1) { ++latest.rearm_deferred_count; return 1; }
-    if (result != 0 || timeout_cycles >= period) return latch_fault(-3);
-    /* 路由仍关闭且上一组DMA已完成，清标识后才允许下一个硬件边沿。 */
+    /* DMA清理放在取得PWM时刻之前，避免准备工作消耗刚检查过的边沿余量。 */
     dma_u[ADC_DMA_INDEX] = 0;
     dma_v[ADC_DMA_INDEX] = 0;
     adc16_clear_status_flags(ADC_U, UINT32_MAX);
     adc16_clear_status_flags(ADC_V, UINT32_MAX);
     completion_mask = 0;
+    uint64_t expected, period;
+    int result = pwm_get_adc_trigger_timing(&expected, &period);
+    if (result == 1) { ++latest.rearm_deferred_count; return 1; }
+    if (result != 0 || timeout_cycles >= period) return latch_fault(-3);
     request_cycles = expected;
     frame_deadline = expected + timeout_cycles;
     pending = true;
-    rearm_watch_started = true;
     latest.trigger_armed = true;
     fenceiorw();
-    if (pwm_set_adc_trigger_enabled(true) != 0) return latch_fault(-3);
+    /* 计数器可能已转过整周期，仅检查计数范围无法识别；CPU时刻也必须仍早于本轮边沿。 */
+    if (hpm_csr_get_core_cycle() >= expected) {
+        pending = latest.trigger_armed = false;
+        ++latest.rearm_deferred_count;
+        return 1;
+    }
+    /* 路由接通前在PWM模块再检查一次边沿；错过窗口则保持关闭并稍后重试。 */
+    result = pwm_set_adc_trigger_enabled(true);
+    if (result == 1) {
+        pending = latest.trigger_armed = false;
+        ++latest.rearm_deferred_count;
+        return 1;
+    }
+    if (result != 0) return latch_fault(-3);
+    rearm_watch_started = true;
     return 0;
 }
 
@@ -289,8 +334,16 @@ static int service_frame(void)
         ++latest.dma_wait_count;
         return current_status();
     }
+    fenceiorw(); /* 确保前面的DMA内存读取结束，再记录软件确认时刻。 */
+    if (hpm_csr_get_core_cycle() >= frame_deadline) {
+        ++latest.timeout_count;
+        latest.timeout_stage = ADC_TIMEOUT_FRAME;
+        latest.timeout_completion_mask = completion_mask;
+        return latch_fault(-7);
+    }
     pending = false;
     update_sample(values[0], values[1]);
+    fenceiorw();
     latest.publish_cycles = hpm_csr_get_core_cycle();
     last_progress_cycles = latest.publish_cycles;
     if (latest.offset_state == ADC_OFFSET_FAILED) return latch_fault(-5);
@@ -380,8 +433,9 @@ int adc_poll(void)
 {
     uint32_t state = disable_global_irq(CSR_MSTATUS_MIE_MASK);
     int result = service_frame();
-    if (initialized && !fault) read_aux_results();
+    bool read_aux = initialized && !fault;
     restore_global_irq(state);
+    if (read_aux) read_aux_results();
     return result;
 }
 

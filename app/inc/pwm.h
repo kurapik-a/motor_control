@@ -22,7 +22,8 @@ void pwm_disable(void);       /* 立即强制六路为低电平；计数器和�
 typedef void (*pwm_current_loop_callback_t)(void);
 int pwm_set_current_loop_callback(pwm_current_loop_callback_t callback);
 /* ADC模块独占以下接口；不改变桥臂使能。timing返回CPU周期计数。
- * 0=成功，1=靠近边沿需稍后重试，负值=错误。需在同一短临界区内取时刻及设置路由。 */
+ * 0=成功，1=靠近边沿需稍后重试，负值=错误。接通路由也会再次检查边沿余量。
+ * 需在同一短临界区内取时刻及设置路由。 */
 int pwm_set_adc_trigger_enabled(bool enable);
 int pwm_get_adc_trigger_timing(uint64_t *trigger_cycles, uint64_t *period_cycles);
 #endif /* MOTOR_PWM_H */

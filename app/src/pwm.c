@@ -1,5 +1,12 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
+/* 与ADC实时路径配套；Debug下也避免驱动内联函数退化成大量无优化调用。 */
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC optimize ("O2")
+#endif
 #include "pwm.h"
+#if defined(__GNUC__)
+static inline __attribute__((always_inline)) uint64_t hpm_csr_get_core_cycle(void);
+#endif
 #include "motor_config.h"
 #include "board.h"
 #include "hpm_pwmv2_drv.h"
@@ -10,9 +17,15 @@
 extern uint32_t hpm_core_clock;
 
 static uint32_t reload;
+static uint32_t pwm_clock_hz;
 static bool initialized;
 static volatile bool output_enabled;
 static pwm_current_loop_callback_t volatile current_loop;
+
+/* 时间戳与PWM计数读取必须相邻且从片内执行，避免两次读数间出现Flash取指延迟。 */
+int pwm_set_adc_trigger_enabled(bool enable) ATTR_RAMFUNC;
+int pwm_get_adc_trigger_timing(uint64_t *trigger_cycles, uint64_t *period_cycles) ATTR_RAMFUNC;
+void pwm_disable(void) ATTR_RAMFUNC;
 
 /* 保留原工程的配对波形、比较器和影子寄存器分配。 */
 static void init_waveforms(PWMV2_Type *ptr, uint32_t PWM_PRD, uint8_t CMP_SHADOW_REGISTER_UPDATE_TYPE, uint8_t CMP_PWM_REGISTER_UPDATE_TYPE, uint8_t CMP_SOURCE)
@@ -179,6 +192,7 @@ int pwm_init(void)
         return -2;
     }
     reload = period;
+    pwm_clock_hz = hz; /* 时钟配置只在初始化读取；实时路径不反复调用Flash中的时钟查询。 */
     init_waveforms(BOARD_PMSM0PWM, reload, pwm_shadow_register_update_on_reload,
                    pwm_reload_update_on_reload, cmp_value_from_shadow_val);
     initialized = true;
@@ -237,10 +251,14 @@ SDK_DECLARE_EXT_ISR_M(BOARD_PMSM0APP_PWM_IRQ, pwm_current_loop_isr)
 int pwm_set_adc_trigger_enabled(bool enable)
 {
     if (!initialized) return -1;
-    trgm_output_t route = {0};
-    route.type = trgm_output_same_as_input;
-    route.input = enable ? BOARD_PMSM0_TRIGMUX_IN_NUM : HPM_TRGM0_INPUT_SRC_VSS;
-    trgm_output_config(BOARD_PMSM0PWM_TRGM, BOARD_PMSM0_TRG_NUM, &route);
+    if (enable) {
+        if (reload <= MOTOR_ADC_TRIGGER_GUARD_TICKS + 2u) return -2;
+        uint32_t count = PWMV2_CNT_VAL_VALUE_GET(BOARD_PMSM0PWM->CNT_VAL[pwm_counter_0]) >> 8;
+        if (count < 2u || count >= reload - 1u - MOTOR_ADC_TRIGGER_GUARD_TICKS) return 1;
+    }
+    /* 与SDK的same_as_input、invert=false配置一致；这里只需改共享路由的一个寄存器。 */
+    uint8_t input = enable ? BOARD_PMSM0_TRIGMUX_IN_NUM : HPM_TRGM0_INPUT_SRC_VSS;
+    BOARD_PMSM0PWM_TRGM->TRGOCFG[BOARD_PMSM0_TRG_NUM] = TRGM_TRGOCFG_TRIGOSEL_SET(input);
     fenceiorw();
     return 0;
 }
@@ -251,18 +269,34 @@ int pwm_get_adc_trigger_timing(uint64_t *trigger_cycles, uint64_t *period_cycles
 {
     if (!initialized) return -1;
     if (!trigger_cycles || !period_cycles) return -3;
-    uint32_t hz = clock_get_frequency(BOARD_STEPPER0_MOTOR_CLOCK_SOURCE);
+    uint32_t hz = pwm_clock_hz;
     if (!hz || !hpm_core_clock || reload <= MOTOR_ADC_TRIGGER_GUARD_TICKS + 2u) return -2;
+    /* 常用600MHz CPU/200MHz PWM为整数倍，后续只需乘法和移位。
+     * 在读PWM计数前判断比例；非整数倍配置保留通用64位换算。 */
+    uint32_t ratio = hpm_core_clock / hz;
+    bool integer_ratio = hpm_core_clock % hz == 0u;
+    /* 与计数读取无关的除法在配对时间戳之前完成。 */
+    uint64_t period = integer_ratio ? (uint64_t)reload * ratio : (uint64_t)reload * hpm_core_clock / hz;
+    uint64_t guard = integer_ratio ? (uint64_t)MOTOR_ADC_TRIGGER_GUARD_TICKS * ratio :
+                     (uint64_t)MOTOR_ADC_TRIGGER_GUARD_TICKS * hpm_core_clock / hz;
     uint64_t before = hpm_csr_get_core_cycle();
     /* CNT_VAL为24位整数+8位小数；SDK读取函数直接返回寄存器，不会右移。
      * reload/point/guard均为普通PWM时钟计数，边沿判断前必须统一单位。
      * 对应HPM6E00用户手册42.4.3及SDK pwmv2_set_shadow_val的value<<8。 */
-    uint32_t count_raw = pwmv2_get_counter_value(BOARD_PMSM0PWM, pwm_counter_0);
+    uint32_t count_raw = PWMV2_CNT_VAL_VALUE_GET(BOARD_PMSM0PWM->CNT_VAL[pwm_counter_0]);
+    uint64_t after = hpm_csr_get_core_cycle();
+    /* 若读数配对本身耗时过长，不再把早先CPU时刻与较晚PWM计数拼成一个错误基准。 */
+    if (after - before >= guard) return 1;
     uint32_t count = count_raw >> 8;
     uint32_t point = reload - 1u;
     if (count < 2u || count >= point - MOTOR_ADC_TRIGGER_GUARD_TICKS) return 1;
     /* 用原始精度算剩余时间，避免丢掉低8位后把边沿时刻估晚。 */
-    *trigger_cycles = before + (uint64_t)((point << 8) - count_raw) * hpm_core_clock / ((uint64_t)hz << 8);
-    *period_cycles = (uint64_t)reload * hpm_core_clock / hz;
+    if (integer_ratio) {
+        *trigger_cycles = before + ((uint64_t)((point << 8) - count_raw) * ratio >> 8);
+    } else {
+        *trigger_cycles = before + (uint64_t)((point << 8) - count_raw) * hpm_core_clock / ((uint64_t)hz << 8);
+    }
+    if (*trigger_cycles <= after) return 1;
+    *period_cycles = period;
     return 0;
 }
