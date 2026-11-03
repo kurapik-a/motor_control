@@ -92,6 +92,20 @@
 #define MOTOR_ADC_AUX_PERIOD_PRESCALE 22u      /* 辅助 ADC 周期采样硬件预分频字段；按芯片寄存器定义解释，不是 Hz。 */
 #define MOTOR_ADC_AUX_PERIOD_COUNT 5u          /* 辅助 ADC 周期采样硬件周期计数字段；配合预分频及 ADC 时钟决定周期。 */
 
+/* ===== PWM 开环验证：上电不自动运行，参数均为试验上限 ===== */
+#define MOTOR_PWM_TEST_ELECTRICAL_HZ 1.0f      /* 默认电角频率 Hz，正负改变相序；不是输出轴 rpm。 */
+#define MOTOR_PWM_TEST_AMPLITUDE 0.01f        /* 占空比偏离 0.5 的峰值：0.01 为 49%~51%。 */
+#define MOTOR_PWM_TEST_DURATION_MS 5000u      /* 默认测试时长，结束自动关桥。 */
+#define MOTOR_PWM_TEST_RAMP_MS 500u           /* 幅值及之后电角频率的缓升时间，ms，必须大于0。 */
+#define MOTOR_PWM_TEST_CURRENT_LIMIT_MA 3000.0f /* 独立采样阶段 U/V/W 绝对电流软件门限，mA。 */
+#define MOTOR_PWM_TEST_ADC_TIMEOUT_MS 10u     /* 采样过旧或主循环未喂新采样心跳时，关断输出。 */
+#define MOTOR_PWM_TEST_MAX_ELECTRICAL_HZ 5.0f /* 测试接口允许的最大电角频率绝对值，Hz。 */
+#define MOTOR_PWM_TEST_MAX_AMPLITUDE 0.02f    /* 测试接口允许的最大调制幅值，0.02=48%~52%。 */
+#define MOTOR_PWM_TEST_MAX_DURATION_MS 10000u /* 单次测试允许的最长时间，ms。 */
+#if MOTOR_PWM_TEST_RAMP_MS == 0 || MOTOR_PWM_TEST_ADC_TIMEOUT_MS == 0
+#error "PWM test ramp and ADC timeout must be positive"
+#endif
+
 /* ===== 8. 对齐过程和保护检查间隔 ===== */
 #define MOTOR_ALIGN_START_ELECTRICAL_DEG 90.0f /* ABZ 对齐初始电角度，单位电角度 °，不是机械位置命令角度。 */
 #define MOTOR_ALIGN_STEP_DEG_PER_TICK 0.1f     /* 对齐时每个外环周期向零角度移动的电角度步长，单位 °。 */

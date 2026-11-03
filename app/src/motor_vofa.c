@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 #include "motor_vofa.h"
+#include "pwm_test.h"
 #include "board.h"
 #include "hpm_clock_drv.h"
 #include "hpm_csr_drv.h"
@@ -50,6 +51,26 @@ int motor_vofa_set_encoder(const encoder_data_t *data)
     restore_global_irq(irq_state);
     return VOFA_OK;
 }
+/* 当前移植阶段的 ENABLE 只启动限时开环 PWM 验证，不是原三环闭环使能。 */
+static int pwm_test_command(void *user, const vofa_command_t *cmd)
+{
+    (void)user;
+    if (!cmd) return -1;
+    switch (cmd->kind) {
+    case VOFA_CMD_ENABLE:
+        if (cmd->value == 0) { pwm_test_stop(); return 0; }
+        return pwm_test_start(MOTOR_PWM_TEST_ELECTRICAL_HZ, MOTOR_PWM_TEST_AMPLITUDE,
+                              MOTOR_PWM_TEST_DURATION_MS);
+    case VOFA_CMD_STOP:
+        pwm_test_stop();
+        return 0;
+    case VOFA_CMD_PING:
+        return 0;
+    default:
+        return -1; /* 当前未接入位置/速度/电流目标和 PID 命令。 */
+    }
+}
+
 int motor_vofa_init(void)
 {
     vofa_debug_config_t config;
@@ -74,8 +95,8 @@ int motor_vofa_init(void)
     vofa_debug_config_default(&config);
     vofa_hpm_uart_bind(&config, &uart_port);
     config.channels = MOTOR_VOFA_CHANNEL_COUNT;
-    /* 当前只上报输出轴数据，不注册电机使能、目标设置或 PID 调参回调。 */
-    config.on_command = 0;
+    /* ENABLE/STOP 仅控制独立 PWM 开环验证；其他电机目标/PID 仍拒绝。 */
+    config.on_command = pwm_test_command;
     motor_vofa_io_result = vofa_debug_init(&motor_vofa_context, &config);
     if (motor_vofa_io_result != VOFA_OK) {
         return motor_vofa_io_result;

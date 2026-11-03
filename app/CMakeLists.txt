@@ -33,7 +33,8 @@ project(motor_control)
 sdk_inc(../motor/inc ../core/inc inc)
 
 sdk_app_src(src/main.c src/motor_vofa.c src/encoder.c
-    src/adc.c)
+    src/adc.c
+    src/pwm.c src/pwm_test.c)
 
 # 仅延后编译，不删除这些初始化和扩展源码。
 if(MOTOR_CONTROL_BUILD_MOTOR)
