@@ -13,6 +13,7 @@
 #define BOARD_PMSM0_ADC_CH_V 10
 #define BOARD_APP_ADC16_UDC_CH 15
 #define BOARD_APP_ADC16_TEMP_CH 1
+#define BOARD_APP_ADC16_BASE (&mock_adc[0])
 #define BOARD_RUNNING_CORE 0
 #define IOC_PAD_PF06 0
 #define IOC_PAD_PF08 1
@@ -36,11 +37,12 @@
 #define SDK_DECLARE_EXT_ISR_M(irq,handler)
 #define fenceiorw() ((void)0)
 #define core_local_mem_to_sys_address(core,addr) (addr)
-typedef struct {unsigned id,flags,interrupts;} ADC16_Type;
+typedef struct {unsigned id,flags,interrupts;unsigned sample_cycles[16],period_count[16],prescale[16];uint16_t period_results[16];} ADC16_Type;
 typedef struct {struct {unsigned FUNC_CTL;} PAD[2];} mock_ioc_t;
 typedef struct {unsigned ch,sample_cycle;} adc16_channel_config_t;
 typedef struct {unsigned res,conv_mode,adc_clk_div;bool sel_sync_ahb,adc_ahb_en;} adc16_config_t;
 typedef struct {unsigned trig_ch,trig_len,adc_ch[4];bool inten[4];} adc16_pmt_config_t;
+typedef struct {uint8_t ch,prescale,period_count;} adc16_prd_config_t;
 typedef struct {uint32_t result:16;uint32_t reserved:4;uint32_t adc_ch:5;uint32_t trig_ch:4;uint32_t seq_num:2;uint32_t cycle_bit:1;} adc16_pmt_dma_data_t;
 extern ADC16_Type mock_adc[2];
 extern mock_ioc_t mock_ioc;
@@ -63,4 +65,6 @@ int adc16_set_pmt_queue_enable(ADC16_Type *,unsigned,bool);
 void adc16_clear_status_flags(ADC16_Type *,uint32_t);
 uint32_t adc16_get_status_flags(ADC16_Type *);
 void adc16_init_pmt_dma(ADC16_Type *,uint32_t);
+int adc16_set_prd_config(ADC16_Type *,adc16_prd_config_t *);
+int adc16_get_prd_result(ADC16_Type *,uint8_t,uint16_t *);
 #endif
