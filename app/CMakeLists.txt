@@ -34,7 +34,8 @@ sdk_inc(../motor/inc ../core/inc inc)
 
 sdk_app_src(src/main.c src/motor_vofa.c src/encoder.c
     src/adc.c
-    src/pwm.c src/pwm_test.c)
+    src/pwm.c)
+# 开环验证已完成：保留 pwm_test.c/.h 和主机测试，但不加入默认固件。
 
 # 仅延后编译，不删除这些初始化和扩展源码。
 if(MOTOR_CONTROL_BUILD_MOTOR)

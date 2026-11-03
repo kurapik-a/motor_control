@@ -3,7 +3,6 @@
 #include "encoder.h"
 #include "adc.h"
 #include "pwm.h"
-#include "pwm_test.h"
 #include "motor_vofa.h"
 
 /* 调试器中查看编码器初始化/读取结果；含义见 encoder.h。 */
@@ -55,7 +54,6 @@ int main(void)
         adc_poll();
         adc_result = adc_read(&adc_data);
         adc_sample = adc_data;
-        pwm_test_poll(); /* 请求默认为0；显式触发后才运行限时开环测试。 */
         motor_vofa_poll();
     }
 }
