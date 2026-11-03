@@ -23,12 +23,20 @@ int pwm_set_duty(float u,float v,float w) {
  CHECK(u>=0.48f && u<=0.52f && v>=0.48f && v<=0.52f && w>=0.48f && w<=0.52f);
  CHECK(fabs(u+v+w-1.5f)<0.00001f); ++commits; return 0;
 }
+int pwm_set_counts(uint32_t u,uint32_t v,uint32_t w) {
+ CHECK(u<=10000 && v<=10000 && w<=10000);
+ /* SVPWM允许共模偏移；验证线电压与最大调制幅值，而非三相和。 */
+ CHECK(abs((int)u-(int)v)<=350 && abs((int)v-(int)w)<=350 && abs((int)w-(int)u)<=350);
+ ++commits; return 0;
+}
 int pwm_enable(void) {enabled=true; return 0;}
 void pwm_disable(void) {enabled=false;}
 int pwm_set_current_loop_callback(pwm_current_loop_callback_t cb) {callback=cb; if(!cb) enabled=false; return 0;}
 /* 旧主机运行库可能没有 C99 min/max，替换为等价的有限值实现。 */
 #define fminf(a,b) ((a)<(b)?(a):(b))
 #define fmaxf(a,b) ((a)>(b)?(a):(b))
+#define fmodf(x,y) ((float)fmod((double)(x),(double)(y)))
+#include "../motor/src/pmsm_control.c"
 #include "pwm_test.c"
 static void fresh(void) {++input.sample_count; input.capture_cycles=cycles;}
 static void tick(unsigned count, bool service) {

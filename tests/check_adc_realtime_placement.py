@@ -23,6 +23,8 @@ for line in dump("-t").splitlines():
 placed = ["adc_u_isr", "adc_v_isr", "service_frame", "arm_frame", "read_dma_word",
           "update_sample", "adc_poll", "adc_read", "adc_init", "read_aux_results",
           "pwm_set_adc_trigger_enabled", "pwm_get_adc_trigger_timing", "motor_vofa_set_encoder", "motor_vofa_poll"]
+placed += ["pwm_set_counts", "pwm_enable", "pwm_disable",
+           "pwm_set_current_loop_callback", "pwm_test_stop", "test_tick"]
 for name in placed:
     assert name in symbols, f"Missing realtime symbol: {name}"
     assert 0 <= symbols[name] < 0x40000, f"Not in local ILM: {name} at {symbols[name]:#x}"
@@ -31,13 +33,20 @@ for name in placed:
 # 辅助ADC读取仅在开中断区调用SDK；初始化和非整数时钟比的通用除法不在此列表。
 checked = ["adc_u_isr", "adc_v_isr", "service_frame", "arm_frame", "read_dma_word",
            "update_sample", "adc_read", "pwm_set_adc_trigger_enabled"]
+checked += ["pwm_set_counts", "pwm_enable", "pwm_disable",
+            "pwm_set_current_loop_callback", "pwm_test_stop", "test_tick"]
 for name in checked:
     assembly = dump("-d", f"--disassemble={name}")
     if not re.search(r"^\s*[0-9a-fA-F]+:\s", assembly, re.M):
         # SES将ILM内容打包到启动初始化数据中，ELF的RAM段没有可直接反汇编的CONTENTS。
         # 地址取最终ELF，指令及调用重定位取同次构建的目标文件。
         object_root = Path(args.elf).resolve().parent.parent / "Obj"
-        filename = "pwm.c.o" if name == "pwm_set_adc_trigger_enabled" else "adc.c.o"
+        if name in {"pwm_test_stop", "test_tick"}:
+            filename = "pwm_test.c.o"
+        elif name.startswith("pwm_"):
+            filename = "pwm.c.o"
+        else:
+            filename = "adc.c.o"
         objects = list(object_root.rglob(filename))
         assert len(objects) == 1, f"Cannot find unique SES object for {name}: {objects}"
         assembly = subprocess.check_output([args.objdump, "-dr", f"--disassemble={name}", str(objects[0])],
@@ -55,4 +64,4 @@ for name in checked:
     if name == "service_frame":
         assert "rdcycle" in assembly, f"Timestamp not inlined in {name}"
 
-print("PASS realtime image: ILM placement, inline cycle reads, no direct Flash calls in ADC timing chain")
+print("PASS realtime image: ADC/open-loop ILM placement, inline cycle reads, no direct Flash calls in critical paths")
