@@ -14,6 +14,21 @@ static inline __attribute__((always_inline)) uint64_t hpm_csr_get_core_cycle(voi
 #include "hpm_csr_drv.h"
 #include "hpm_interrupt.h"
 #include "hpm_trgm_drv.h"
+#if defined(__GNUC__)
+/* Debug的-fno-inline可能让SDK静态函数落到Flash；提交期间须强制内联。 */
+static inline __attribute__((always_inline)) void pwmv2_shadow_register_unlock(PWMV2_Type *pwm_x);
+static inline __attribute__((always_inline)) void pwmv2_shadow_register_lock(PWMV2_Type *pwm_x);
+static inline __attribute__((always_inline)) void pwmv2_set_shadow_val(PWMV2_Type *pwm_x, uint8_t index, uint32_t value, uint8_t high_resolution_tick, bool enable_half_cycle);
+static inline __attribute__((always_inline)) void pwmv2_disable_force_by_software(PWMV2_Type *pwm_x, pwm_channel_t chn);
+static inline __attribute__((always_inline)) void pwmv2_clear_cmp_irq_status(PWMV2_Type *pwm_x, uint32_t mask);
+static inline __attribute__((always_inline)) void pwmv2_enable_cmp_irq(PWMV2_Type *pwm_x, uint8_t cmp_index);
+static inline __attribute__((always_inline)) void pwmv2_disable_cmp_irq(PWMV2_Type *pwm_x, uint8_t cmp_index);
+static inline __attribute__((always_inline)) void pwmv2_force_output(PWMV2_Type *pwm_x, pwm_channel_t chn, pwm_force_mode_t mode, bool invert);
+static inline __attribute__((always_inline)) void pwmv2_force_update_time_by_shadow(PWMV2_Type *pwm_x, pwm_channel_t chn, pwm_force_shadow_trigger_t update_time);
+static inline __attribute__((always_inline)) void pwmv2_enable_force_by_software(PWMV2_Type *pwm_x, pwm_channel_t chn);
+static inline __attribute__((always_inline)) void pwmv2_set_force_update_time(PWMV2_Type *pwm_x, pwm_channel_t chn, pwm_force_trigger_t time);
+static inline __attribute__((always_inline)) void pwmv2_enable_software_force(PWMV2_Type *pwm_x, pwm_channel_t chn);
+#endif
 extern uint32_t hpm_core_clock;
 
 static uint32_t reload;
@@ -26,6 +41,9 @@ static pwm_current_loop_callback_t volatile current_loop;
 int pwm_set_adc_trigger_enabled(bool enable) ATTR_RAMFUNC;
 int pwm_get_adc_trigger_timing(uint64_t *trigger_cycles, uint64_t *period_cycles) ATTR_RAMFUNC;
 void pwm_disable(void) ATTR_RAMFUNC;
+int pwm_enable(void) ATTR_RAMFUNC;
+int pwm_set_counts(uint32_t u, uint32_t v, uint32_t w) ATTR_RAMFUNC;
+int pwm_set_current_loop_callback(pwm_current_loop_callback_t callback) ATTR_RAMFUNC;
 
 /* 保留原工程的配对波形、比较器和影子寄存器分配。 */
 static void init_waveforms(PWMV2_Type *ptr, uint32_t PWM_PRD, uint8_t CMP_SHADOW_REGISTER_UPDATE_TYPE, uint8_t CMP_PWM_REGISTER_UPDATE_TYPE, uint8_t CMP_SOURCE)

@@ -3,7 +3,7 @@
 #define MOTOR_PWM_TEST_H
 #include <stdint.h>
 #include <stdbool.h>
-/* 开环三相正弦验证；不使用位置/速度/电流 PI，不保证转子跟随给定频率。 */
+/* 反Park+SVPWM电压开环验证；不使用位置/速度/电流 PI，不保证转子跟随给定频率。 */
 typedef enum {
     PWM_TEST_IDLE = 0, PWM_TEST_RUNNING = 1, PWM_TEST_FINISHED = 2, PWM_TEST_STOPPED = 3,
     PWM_TEST_BAD_ARGUMENT = -1, PWM_TEST_ADC_NOT_READY = -2,
@@ -23,13 +23,15 @@ typedef struct {
     bool output_enabled;
     uint32_t reload, irq_ticks, elapsed_ms, waveform_updates;
     float electrical_hz, amplitude, phase_deg, duty_u, duty_v, duty_w, peak_current_ma;
+    uint8_t sector;
     pwm_test_trip_t trip;
 } pwm_test_monitor_t;
 /* 调试器修改：0=无请求，1=默认正转测试，2=默认反转测试，3=立即停止。
  * 请求由主循环消费并归零；标定完成后才接受启动，禁止改程序让它上电自动使能。 */
 extern volatile uint32_t pwm_test_request;
 extern volatile pwm_test_monitor_t pwm_test_monitor;
-/* 仅主循环调用。电角频率可正负，amplitude 为占空比偏离 0.5 的峰值，例如 0.01。
+/* 仅主循环调用。电角频率可正负，amplitude 为等效相正弦占空比峰值，例如 0.01。
+ * SVPWM带共模偏移，三相占空比和不恒为1.5；线电压保持对应的正弦关系。
  * 返回 0=启动成功；负值见枚举。运行中重复启动返回 BUSY，原测试继续运行。 */
 int pwm_test_start(float electrical_hz, float amplitude, uint32_t duration_ms);
 void pwm_test_poll(void); /* main 中 adc_poll 后持续调用；本函数不触发 ADC。 */

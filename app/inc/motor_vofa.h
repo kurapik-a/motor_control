@@ -11,7 +11,8 @@
 
 /* board_init() 后调用一次；0=成功，负数=初始化失败。 */
 int motor_vofa_init(void);
-/* 主循环持续调用，按配置减速比换算输出轴数据并上传；不可在中断内调用。 */
+/* 主循环持续调用，处理ENABLE,1开环启动、ENABLE,0/STOP停机，上传输出轴数据。
+ * 命令以CR/LF结束；启动执行ADC/过流门禁，失败不排队，不在中断内调用。 */
 void motor_vofa_poll(void);
 /* 复制一次 encoder_read() 返回的电机轴采样，可从本核前台或中断调用。
  * 不保留 data 指针；NULL 或非有限浮点值返回负数，上一组有效数据保持不变。
@@ -21,4 +22,6 @@ void motor_vofa_poll(void);
 int motor_vofa_set_encoder(const encoder_data_t *data);
 extern volatile int motor_vofa_io_result;
 extern volatile int motor_vofa_publish_result;
+/* 应用回调结果；语法错误等协议层拒绝看motor_vofa_context.stats.last_command_result。 */
+extern volatile int motor_vofa_command_result;
 #endif /* MOTOR_VOFA_H */

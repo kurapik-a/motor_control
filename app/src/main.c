@@ -1,9 +1,10 @@
-/* PWM同步ADC采样阶段：桥臂保持关闭，主循环读取快照，VOFA仍上传输出轴数据。 */
+/* 电压开环验证：上电关桥，调试器/VOFA请求后执行反Park+SVPWM，上传编码器。 */
 #include "board.h"
 #include "encoder.h"
 #include "adc.h"
 #include "pwm.h"
 #include "motor_vofa.h"
+#include "pwm_test.h"
 
 /* 调试器中查看编码器初始化/读取结果；含义见 encoder.h。 */
 volatile int encoder_result;
@@ -50,6 +51,7 @@ int main(void)
         adc_poll(); /* 先处理首次/延期重臂；采样仍由PWM硬件触发。 */
         adc_result = adc_read(&adc_data);
         adc_sample = adc_data;
+        pwm_test_poll(); /* 调试器请求启动；检查采样、过流和限时，默认不运行。 */
         encoder_result = encoder_read(&sample);
         if (encoder_result == 0)
         {

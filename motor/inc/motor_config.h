@@ -94,14 +94,14 @@
 #define MOTOR_ADC_AUX_PERIOD_COUNT 5u          /* 母线/温度周期计数5；200MHz时基下约104.86ms一次，不随20kHz电流采样更新。 */
 
 /* ===== PWM 开环验证：上电不自动运行，参数均为试验上限 ===== */
-#define MOTOR_PWM_TEST_ELECTRICAL_HZ 1.0f      /* 默认电角频率 Hz，正负改变相序；不是输出轴 rpm。 */
-#define MOTOR_PWM_TEST_AMPLITUDE 0.01f        /* 占空比偏离 0.5 的峰值：0.01 为 49%~51%。 */
+#define MOTOR_PWM_TEST_ELECTRICAL_HZ 5.0f      /* 默认电角频率 Hz，正负改变相序；不是输出轴 rpm。 */
+#define MOTOR_PWM_TEST_AMPLITUDE 0.01f        /* 等效相正弦占空比峰值；SVPWM另带共模偏移。 */
 #define MOTOR_PWM_TEST_DURATION_MS 5000u      /* 默认测试时长，结束自动关桥。 */
 #define MOTOR_PWM_TEST_RAMP_MS 500u           /* 幅值及之后电角频率的缓升时间，ms，必须大于0。 */
 #define MOTOR_PWM_TEST_CURRENT_LIMIT_MA 3000.0f /* 独立采样阶段 U/V/W 绝对电流软件门限，mA。 */
 #define MOTOR_PWM_TEST_ADC_TIMEOUT_MS 10u     /* 采样过旧或主循环未喂新采样心跳时，关断输出。 */
 #define MOTOR_PWM_TEST_MAX_ELECTRICAL_HZ 5.0f /* 测试接口允许的最大电角频率绝对值，Hz。 */
-#define MOTOR_PWM_TEST_MAX_AMPLITUDE 0.02f    /* 测试接口允许的最大调制幅值，0.02=48%~52%。 */
+#define MOTOR_PWM_TEST_MAX_AMPLITUDE 0.02f    /* 测试接口允许的最大等效相正弦幅值。 */
 #define MOTOR_PWM_TEST_MAX_DURATION_MS 10000u /* 单次测试允许的最长时间，ms。 */
 #if MOTOR_PWM_TEST_RAMP_MS == 0 || MOTOR_PWM_TEST_ADC_TIMEOUT_MS == 0
 #error "PWM test ramp and ADC timeout must be positive"

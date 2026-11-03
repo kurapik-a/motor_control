@@ -1,8 +1,12 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC optimize ("O2")
+#endif
 #include "pwm_test.h"
 #include "pwm.h"
 #include "adc.h"
 #include "motor_config.h"
+#include "pmsm_control.h"
 #include "hpm_soc.h"
 #include "hpm_csr_drv.h"
 #include "hpm_interrupt.h"
@@ -19,7 +23,11 @@ static uint32_t duration_ticks, last_wave_tick, last_sample_count;
 static float phase, frequency, modulation;
 #define TWO_PI 6.28318530717958647692f
 
-/* ADC 数据与 PWM 不同步，这里只作独立验证阶段的软件检查，不是硬件过流保护。 */
+/* 关中断提交PWM及停止路径在ILM执行，避免挤占ADC的10us完成窗口。 */
+static void test_tick(void) ATTR_RAMFUNC;
+void pwm_test_stop(void) ATTR_RAMFUNC;
+
+/* 使用同步ADC最近快照作软件检查；检查和波形更新仍在前台，不是硬件过流保护。 */
 static int check_adc(const adc_data_t *sample, int result)
 {
     if (result != 0 || !sample->sample_valid || !sample->current_valid ||
@@ -80,7 +88,8 @@ static void test_tick(void)
         pwm_disable();
         running = false;
         pwm_test_monitor.output_enabled = false;
-        pwm_test_monitor.elapsed_ms = (uint64_t)now * 1000u / MOTOR_PWM_FREQUENCY_HZ;
+        /* 启动时限制计数范围，避免ISR调用Flash中的64位除法库。 */
+        pwm_test_monitor.elapsed_ms = now * 1000u / MOTOR_PWM_FREQUENCY_HZ;
         pwm_test_monitor.result = reason;
     }
 }
@@ -104,7 +113,8 @@ int pwm_test_start(float electrical_hz, float amplitude, uint32_t duration_ms)
     pwm_test_stop();
     if (!(fabsf(electrical_hz) >= 0.1f && fabsf(electrical_hz) <= MOTOR_PWM_TEST_MAX_ELECTRICAL_HZ) ||
         !(amplitude > 0.0f && amplitude <= MOTOR_PWM_TEST_MAX_AMPLITUDE) ||
-        duration_ms == 0 || duration_ms > MOTOR_PWM_TEST_MAX_DURATION_MS || hpm_core_clock == 0) {
+        duration_ms == 0 || duration_ms > MOTOR_PWM_TEST_MAX_DURATION_MS || hpm_core_clock == 0 ||
+        ((uint64_t)MOTOR_PWM_FREQUENCY_HZ * duration_ms + 999u) / 1000u > UINT32_MAX / 1000u) {
         pwm_test_monitor.result = PWM_TEST_BAD_ARGUMENT;
         return PWM_TEST_BAD_ARGUMENT;
     }
@@ -132,6 +142,13 @@ int pwm_test_start(float electrical_hz, float amplitude, uint32_t duration_ms)
     pwm_test_monitor.phase_deg = 0;
     pwm_test_monitor.duty_u = pwm_test_monitor.duty_v = pwm_test_monitor.duty_w = 0.5f;
     uint32_t state = disable_global_irq(CSR_MSTATUS_MIE_MASK);
+    /* 前台准备期间ADC中断可能锁存故障；使能前在同一临界区重新确认。 */
+    adc_result = adc_read(&sample);
+    if (adc_result != 0 || !sample.sample_valid || !sample.current_valid || sample.current_clipped) {
+        pwm_test_monitor.result = PWM_TEST_ADC_NOT_READY;
+        restore_global_irq(state);
+        return PWM_TEST_ADC_NOT_READY;
+    }
     result = pwm_set_current_loop_callback(test_tick);
     callback_bound = result == 0;
     if (result == 0) result = pwm_enable();
@@ -199,22 +216,30 @@ void pwm_test_poll(void)
     if (phase >= TWO_PI) phase -= TWO_PI;
     if (phase < 0) phase += TWO_PI;
     float a = modulation * ramp;
-    float u = 0.5f + a * sinf(phase);
-    float v = 0.5f + a * sinf(phase - TWO_PI / 3.0f);
-    float w = 0.5f + a * sinf(phase + TWO_PI / 3.0f);
+    pmsm_pwm_t wave;
+    /* 原SVPWM的alpha/beta计数尺度=相占空比峰值*reload*sqrt(3)。
+     * 给定旋转电角度和Uq，电流仅用于保护，PI不参与此次开环。 */
+    result = pmsm_voltage_to_pwm(0.0f, 1.73205080757f * a * pwm_get_reload(),
+                                phase * 360.0f / TWO_PI, pwm_get_reload(), &wave);
+    if (result != 0) {
+        pwm_test_stop();
+        pwm_test_monitor.result = PWM_TEST_DRIVER_ERROR;
+        return;
+    }
     /* 防止超时 ISR 在前台计算期间结束测试后，前台继续提交新的占空比。 */
     uint32_t state = disable_global_irq(CSR_MSTATUS_MIE_MASK);
     if (running) {
-        result = pwm_set_duty(u, v, w);
+        result = pwm_set_counts(wave.u, wave.v, wave.w);
         if (result != 0) {
             pwm_test_stop();
             pwm_test_monitor.result = PWM_TEST_DRIVER_ERROR;
         } else {
             pwm_test_monitor.elapsed_ms = elapsed;
             pwm_test_monitor.phase_deg = phase * 360.0f / TWO_PI;
-            pwm_test_monitor.duty_u = u;
-            pwm_test_monitor.duty_v = v;
-            pwm_test_monitor.duty_w = w;
+            pwm_test_monitor.duty_u = (float)wave.u / pwm_test_monitor.reload;
+            pwm_test_monitor.duty_v = (float)wave.v / pwm_test_monitor.reload;
+            pwm_test_monitor.duty_w = (float)wave.w / pwm_test_monitor.reload;
+            pwm_test_monitor.sector = wave.sector;
             ++pwm_test_monitor.waveform_updates;
         }
     }

@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 #include "motor_vofa.h"
+#include "pwm_test.h"
 #include "board.h"
 #include "hpm_clock_drv.h"
 #include "hpm_csr_drv.h"
@@ -26,6 +27,7 @@ extern uint32_t hpm_core_clock;
 vofa_debug_t motor_vofa_context;
 volatile int motor_vofa_io_result;
 volatile int motor_vofa_publish_result;
+volatile int motor_vofa_command_result;
 static vofa_hpm_uart_t uart_port;
 static uint64_t sample_period_cycles;
 static uint64_t last_sample_cycles;
@@ -36,6 +38,42 @@ static volatile encoder_data_t encoder_snapshot;
 static int finite_value(float value)
 {
     return value >= -FLT_MAX && value <= FLT_MAX;
+}
+
+/* 协议库在前台poll中调用；直接经过开环启动门禁，返回实际接受/拒绝结果。
+ * 不打印文本回执，避免混入JustFloat上传帧。 */
+static int motor_vofa_command(void *user, const vofa_command_t *command)
+{
+    int result = VOFA_EINVAL;
+    (void)user;
+    if (!command) return VOFA_EINVAL;
+    switch (command->kind) {
+    case VOFA_CMD_ENABLE:
+        if (command->value == 1.0f) {
+            pwm_test_request = 0;
+            result = pwm_test_start(MOTOR_PWM_TEST_ELECTRICAL_HZ,
+                                    MOTOR_PWM_TEST_AMPLITUDE, MOTOR_PWM_TEST_DURATION_MS);
+            break;
+        }
+        if (command->value != 0.0f) break;
+        /* ENABLE,0与STOP都立即停机并取消尚未消费的调试器启动请求。 */
+        pwm_test_request = 0;
+        pwm_test_stop();
+        result = VOFA_OK;
+        break;
+    case VOFA_CMD_STOP:
+        pwm_test_request = 0;
+        pwm_test_stop();
+        result = VOFA_OK;
+        break;
+    case VOFA_CMD_PING:
+        result = VOFA_OK;
+        break;
+    default:
+        break; /* 速度、位置、电流目标和PID命令尚未接入。 */
+    }
+    motor_vofa_command_result = result;
+    return result;
 }
 
 int motor_vofa_set_encoder(const encoder_data_t *data)
@@ -59,6 +97,7 @@ int motor_vofa_init(void)
     vofa_debug_config_t config;
     initialized = false;
     motor_vofa_publish_result = VOFA_OK;
+    motor_vofa_command_result = VOFA_OK;
     sample_period_cycles = (uint64_t)hpm_core_clock / MOTOR_VOFA_SAMPLE_HZ;
     if (sample_period_cycles == 0u) {
         motor_vofa_io_result = VOFA_EINVAL;
@@ -78,8 +117,8 @@ int motor_vofa_init(void)
     vofa_debug_config_default(&config);
     vofa_hpm_uart_bind(&config, &uart_port);
     config.channels = MOTOR_VOFA_CHANNEL_COUNT;
-    /* 当前保留编码器上传；待正式闭环接入后再注册电机控制命令。 */
-    config.on_command = 0;
+    /* ENABLE仅启动限时电压开环，不代表闭合电流环。 */
+    config.on_command = motor_vofa_command;
     motor_vofa_io_result = vofa_debug_init(&motor_vofa_context, &config);
     if (motor_vofa_io_result != VOFA_OK) {
         return motor_vofa_io_result;
