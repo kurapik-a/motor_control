@@ -4,6 +4,7 @@
 #endif
 #include "pmsm_current_ctrl.h"
 #include "pmsm_speed_ctrl.h"
+#include "pmsm_position_ctrl.h"
 #include "pid.h"
 #include "motor_config.h"
 #include "adc.h"
@@ -91,6 +92,7 @@ static void current_trip(uint32_t faults)
     if (faults & PMSM_FAULT_ENCODER) pmsm_current_monitor.aligned = false;
     command_iq = id_ref = iq_ref = 0;
     pmsm_speed_ctrl_stop();
+    pmsm_position_ctrl_stop();
     pmsm_pi_reset(&id_pi); pmsm_pi_reset(&iq_pi);
 }
 
@@ -149,6 +151,7 @@ static void current_sample(const adc_data_t *sample, int status)
         encoder_generation = encoder_get_generation();
         speed_loop_frames = 0;
         pmsm_speed_ctrl_reset_feedback();
+        pmsm_position_ctrl_reset_feedback();
         if (controlling || (pmsm_current_monitor.state == PMSM_CURRENT_ALIGN_COMPLETE && origin_reset)) {
             current_trip(PMSM_FAULT_ENCODER); return;
         }
@@ -176,9 +179,20 @@ static void current_sample(const adc_data_t *sample, int status)
         pmsm_current_monitor.speed_counts_s = 0;
         speed_loop_frames = 0;
         pmsm_speed_ctrl_reset_feedback();
+        pmsm_position_ctrl_reset_feedback();
     }
     speed_reference = encoder_status == 0;
     speed_capture = sample->capture_cycles; speed_phase = phase;
+    if (speed_due) {
+        int32_t position;
+        if (encoder_read_position(&position)) {
+            pmsm_position_ctrl_reset_feedback();
+            pmsm_current_monitor.aligned = false;
+            if (controlling) current_trip(PMSM_FAULT_ENCODER);
+            return;
+        }
+        pmsm_position_ctrl_observe(position);
+    }
     if (!controlling) return;
     if (!pwm_is_enabled()) { current_trip(PMSM_CURRENT_DRIVER_FAULT); return; }
     elapsed = sample->capture_cycles - last_capture;
@@ -233,6 +247,11 @@ static void current_sample(const adc_data_t *sample, int status)
         }
     }
     if (pmsm_current_monitor.state == PMSM_CURRENT_RUNNING && pmsm_speed_monitor.speed_mode) {
+        if (speed_due && pmsm_position_monitor.position_mode) {
+            if (pmsm_position_ctrl_step() || pmsm_speed_ctrl_set_target(pmsm_position_monitor.speed_ref_counts_s, iq_ref)) {
+                current_trip(PMSM_FAULT_NUMERIC); return;
+            }
+        }
         if (speed_due && pmsm_speed_ctrl_step()) { current_trip(PMSM_FAULT_NUMERIC); return; }
         iq_ref = pmsm_speed_monitor.iq_ref_ma; /* 速度PI自身已限流；不再叠加手动电流给定的缓升。 */
     }
@@ -377,6 +396,7 @@ int pmsm_current_ctrl_init(void)
     memset(&input, 0, sizeof(input));
     pmsm_protect_init(&protection);
     if (pmsm_speed_ctrl_init()) return -1;
+    if (pmsm_position_ctrl_init()) return -1;
     reload = pwm_get_reload();
     id_pi.kp = MOTOR_CURRENT_D_KP; id_pi.ki = MOTOR_CURRENT_D_KI; id_pi.limit = MOTOR_CURRENT_D_VOLTAGE_LIMIT_TICKS;
     iq_pi.kp = MOTOR_CURRENT_Q_KP; iq_pi.ki = MOTOR_CURRENT_Q_KI; iq_pi.limit = MOTOR_CURRENT_Q_VOLTAGE_LIMIT_TICKS;
@@ -427,6 +447,7 @@ static int current_begin(bool alignment)
     adc_data_t sample;
     uint32_t phase = 0;
     int status, enc;
+    int32_t position = 0;
     uint32_t irq = disable_global_irq(CSR_MSTATUS_MIE_MASK);
     if (!initialized) { restore_global_irq(irq); return -1; }
     if (pmsm_current_monitor.state == PMSM_CURRENT_FAULT) { restore_global_irq(irq); return -4; }
@@ -436,6 +457,10 @@ static int current_begin(bool alignment)
         restore_global_irq(irq); return -3;
     }
     status = adc_read(&sample); enc = encoder_read_phase(&phase);
+    if (!alignment && pmsm_position_monitor.position_mode) {
+        if (encoder_read_position(&position)) enc = -1;
+        else pmsm_position_ctrl_observe(position);
+    }
     collect_input(&sample, status, enc, hpm_csr_get_core_cycle());
     prepare_feedback(&sample, alignment ? MOTOR_ALIGN_START_ELECTRICAL_DEG : phase_angle(phase));
     pmsm_current_monitor.inhibit_faults = pmsm_protect_check(&protection, &input);
@@ -448,8 +473,12 @@ static int current_begin(bool alignment)
     }
     pmsm_pi_reset(&id_pi); pmsm_pi_reset(&iq_pi);
     filtered_u = sample.current_u_ma; filtered_v = sample.current_v_ma;
-    if (alignment) pmsm_speed_ctrl_stop();
-    else pmsm_speed_ctrl_start();
+    if (alignment) { pmsm_speed_ctrl_stop(); pmsm_position_ctrl_stop(); }
+    else {
+        pmsm_speed_ctrl_start();
+        pmsm_position_ctrl_start();
+        if (pmsm_position_monitor.position_mode) pmsm_speed_ctrl_set_target(0, 0);
+    }
     id_ref = iq_ref = 0;
     if (alignment) { pmsm_current_monitor.aligned = false; command_iq = 0; }
     origin_reset = false;
@@ -503,6 +532,8 @@ int pmsm_current_ctrl_finish_alignment(void)
         speed_reference = speed_valid = false;
         speed_loop_frames = 0;
         pmsm_speed_ctrl_reset_feedback();
+        pmsm_position_ctrl_observe(0);
+        pmsm_position_ctrl_stop();
         speed_phase = 0; speed_capture = 0;
         pmsm_current_monitor.speed_counts_s = 0;
         filtered_u = filtered_v = id_ref = iq_ref = command_iq = 0;
@@ -542,6 +573,7 @@ void pmsm_current_ctrl_stop(void)
     if (pmsm_current_monitor.state != PMSM_CURRENT_FAULT) pmsm_current_monitor.state = PMSM_CURRENT_STOPPED;
     command_iq = id_ref = iq_ref = 0;
     pmsm_speed_ctrl_stop();
+    pmsm_position_ctrl_stop();
     pmsm_current_monitor.id_ref_ma = pmsm_current_monitor.iq_ref_ma = 0;
     pmsm_pi_reset(&id_pi); pmsm_pi_reset(&iq_pi);
     restore_global_irq(irq);
@@ -554,22 +586,47 @@ int pmsm_current_ctrl_set_target(float iq_ma)
     if (pmsm_current_monitor.state == PMSM_CURRENT_FAULT) { restore_global_irq(irq); return -4; }
     if (!pmsm_current_monitor.aligned) { restore_global_irq(irq); return -3; }
     pmsm_speed_ctrl_select_current();
+    pmsm_position_ctrl_select_direct();
     command_iq = iq_ma;
     restore_global_irq(irq);
     return 0;
 }
 
-int pmsm_current_ctrl_set_speed(float output_rpm)
+int pmsm_current_ctrl_set_speed_counts_s(float speed_counts_s)
 {
     int result;
     uint32_t irq;
-    if (!initialized || !cc_finite(output_rpm) || cc_abs(output_rpm) > MOTOR_SPEED_CTRL_MAX_OUTPUT_RPM) return -1;
+    if (!initialized || !cc_finite(speed_counts_s) || cc_abs(speed_counts_s) > MOTOR_SPEED_CTRL_MAX_COUNTS_S) return -1;
     irq = disable_global_irq(CSR_MSTATUS_MIE_MASK);
     if (pmsm_current_monitor.state == PMSM_CURRENT_FAULT) { restore_global_irq(irq); return -4; }
     if (!pmsm_current_monitor.aligned) { restore_global_irq(irq); return -3; }
     if (pmsm_current_monitor.state == PMSM_CURRENT_RUNNING && !pmsm_speed_monitor.running) pmsm_speed_ctrl_start();
-    result = pmsm_speed_ctrl_set_target(output_rpm, iq_ref);
-    if (!result) command_iq = 0;
+    result = pmsm_speed_ctrl_set_target(speed_counts_s, iq_ref);
+    if (!result) { command_iq = 0; pmsm_position_ctrl_select_direct(); }
+    restore_global_irq(irq);
+    return result;
+}
+
+int pmsm_current_ctrl_set_position_counts(float position_count)
+{
+    uint32_t irq;
+    int32_t position;
+    int result;
+    if (!initialized || !cc_finite(position_count) || cc_abs(position_count) > MOTOR_POSITION_MAX_COMMAND_COUNTS) return -1;
+    irq = disable_global_irq(CSR_MSTATUS_MIE_MASK);
+    if (pmsm_current_monitor.state == PMSM_CURRENT_FAULT) { restore_global_irq(irq); return -4; }
+    if (!pmsm_current_monitor.aligned) { restore_global_irq(irq); return -3; }
+    if (encoder_read_position(&position)) { current_trip(PMSM_FAULT_ENCODER); restore_global_irq(irq); return -4; }
+    pmsm_position_ctrl_observe(position);
+    if (!pmsm_position_monitor.position_mode) {
+        if (pmsm_current_monitor.state == PMSM_CURRENT_RUNNING && !pmsm_speed_monitor.running) pmsm_speed_ctrl_start();
+        if (pmsm_speed_ctrl_set_target(0, iq_ref)) { restore_global_irq(irq); return -1; }
+    }
+    result = pmsm_position_ctrl_set_target(position_count);
+    if (!result) {
+        command_iq = 0;
+        if (pmsm_current_monitor.state == PMSM_CURRENT_RUNNING && !pmsm_position_monitor.running) pmsm_position_ctrl_start();
+    }
     restore_global_irq(irq);
     return result;
 }

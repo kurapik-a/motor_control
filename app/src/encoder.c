@@ -9,7 +9,6 @@
 #include "hpm_qeiv2_drv.h"
 #include <stdbool.h>
 #include <limits.h>
-#include <float.h>
 #include "motor_rt.h"
 int encoder_read_phase(uint32_t *phase) MOTOR_RAMFUNC;
 #if defined(__GNUC__)
@@ -94,20 +93,6 @@ int encoder_reset(void)
 
 uint32_t encoder_get_generation(void) { return generation; }
 
-static float electrical_angle_from_phase(uint32_t phase)
-{
-    /* 先用整数取模，再转浮点，避免累计机械角度变大后丢失电角度精度。 */
-    uint32_t electrical_count = (uint32_t)(((uint64_t)phase * ENCODER_POLE_PAIRS)
-        % ENCODER_COUNTS_PER_REV);
-    float angle = (float)electrical_count * (360.0f / (float)ENCODER_COUNTS_PER_REV);
-#if ENCODER_DIRECTION == -1
-    if (electrical_count != 0u) {
-        angle = 360.0f - angle;
-    }
-#endif
-    return angle;
-}
-
 int encoder_read_phase(uint32_t *phase)
 {
     uint32_t value;
@@ -116,6 +101,27 @@ int encoder_read_phase(uint32_t *phase)
     if (value >= ENCODER_COUNTS_PER_REV) return -2;
     *phase = value;
     return 0;
+}
+
+int encoder_read_position(int32_t *position_count)
+{
+    uint32_t before, after, phase, attempt;
+    int64_t turns, position;
+    if (!initialized || !position_count) return -1;
+    for (attempt = 0; attempt < 2; ++attempt) {
+        before = qeiv2_get_current_count(ENCODER_QEI_BASE, qeiv2_counter_type_z);
+        phase = QEIV2_COUNT_PH_PHCNT_GET(qeiv2_get_current_count(ENCODER_QEI_BASE, qeiv2_counter_type_phase));
+        after = qeiv2_get_current_count(ENCODER_QEI_BASE, qeiv2_counter_type_z);
+        if (before != after) continue;
+        if (phase >= ENCODER_COUNTS_PER_REV) return -2;
+        turns = before;
+        if (before > INT32_MAX) turns -= 0x100000000LL;
+        position = (turns * ENCODER_COUNTS_PER_REV + phase) * ENCODER_DIRECTION;
+        if (position < INT32_MIN || position > INT32_MAX) return -3;
+        *position_count = (int32_t)position;
+        return 0;
+    }
+    return -2;
 }
 
 static void update_speed(int32_t position, uint64_t now)
@@ -173,42 +179,8 @@ int encoder_read(encoder_data_t *data)
     }
     update_speed((int32_t)position, now);
     data->position_count = (int32_t)position;
-    data->mechanical_angle_deg = (float)position * (360.0f / (float)ENCODER_COUNTS_PER_REV);
-    data->electrical_angle_deg = electrical_angle_from_phase(phase);
+    data->phase_count = phase;
     data->speed_counts_per_s = speed_counts_per_s;
     data->speed_filtered_counts_per_s = speed_filtered_counts_per_s;
-    data->speed_rpm = speed_counts_per_s * (60.0f / (float)ENCODER_COUNTS_PER_REV);
-    data->speed_filtered_rpm = speed_filtered_counts_per_s * (60.0f / (float)ENCODER_COUNTS_PER_REV);
-    return 0;
-}
-
-static bool output_value_finite(float value)
-{
-    return value >= -FLT_MAX && value <= FLT_MAX;
-}
-
-int encoder_to_output_axis(const encoder_data_t *motor, encoder_output_data_t *output)
-{
-    float ratio = MOTOR_SPEED_REDUCTION_RATIO;
-    encoder_output_data_t converted;
-    if (motor == 0 || output == 0) {
-        return -1;
-    }
-    if (!(ratio > 0.0f) || !output_value_finite(ratio)) {
-        return -2;
-    }
-    if (!output_value_finite(motor->mechanical_angle_deg)
-        || !output_value_finite(motor->speed_rpm)
-        || !output_value_finite(motor->speed_filtered_rpm)) {
-        return -3;
-    }
-    converted.angle_deg = motor->mechanical_angle_deg / ratio;
-    converted.speed_rpm = motor->speed_rpm / ratio;
-    converted.speed_filtered_rpm = motor->speed_filtered_rpm / ratio;
-    if (!output_value_finite(converted.angle_deg) || !output_value_finite(converted.speed_rpm)
-        || !output_value_finite(converted.speed_filtered_rpm)) {
-        return -3;
-    }
-    *output = converted;
     return 0;
 }

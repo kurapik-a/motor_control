@@ -16,6 +16,7 @@ build.ninja
 CMakeCache.txt
 cmake_install.cmake
 compile_commands.json
+.cache/encoder_position/
 
 # IDE / OS
 .vscode/.browse.c_cpp.db*

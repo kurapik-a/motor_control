@@ -12,17 +12,14 @@
 
 volatile pmsm_speed_status_t pmsm_speed_monitor;
 static pmsm_pi_t speed_pi;
-static float counts_s_per_output_rpm;
 MOTOR_INLINE bool speed_finite(float x) { return x >= -FLT_MAX && x <= FLT_MAX; }
 
 int pmsm_speed_ctrl_init(void)
 {
     memset((void *)&pmsm_speed_monitor, 0, sizeof(pmsm_speed_monitor));
-    counts_s_per_output_rpm = MOTOR_ABZ_COUNTS_PER_REV * MOTOR_SPEED_REDUCTION_RATIO / 60.0f;
-    if (!speed_finite(counts_s_per_output_rpm) || counts_s_per_output_rpm <= 0 ||
-        !(MOTOR_SPEED_FILTER_ALPHA > 0 && MOTOR_SPEED_FILTER_ALPHA <= 1) ||
-        !(MOTOR_SPEED_CTRL_MAX_OUTPUT_RPM > 0) || !speed_finite(MOTOR_SPEED_CTRL_MAX_OUTPUT_RPM) ||
-        MOTOR_SPEED_CTRL_MAX_OUTPUT_RPM * counts_s_per_output_rpm >= MOTOR_PROTECT_SPEED_LIMIT_COUNTS_S ||
+    if (!(MOTOR_SPEED_FILTER_ALPHA > 0 && MOTOR_SPEED_FILTER_ALPHA <= 1) ||
+        !(MOTOR_SPEED_CTRL_MAX_COUNTS_S > 0) || !speed_finite(MOTOR_SPEED_CTRL_MAX_COUNTS_S) ||
+        MOTOR_SPEED_CTRL_MAX_COUNTS_S >= MOTOR_PROTECT_SPEED_LIMIT_COUNTS_S ||
         !(MOTOR_SPEED_CTRL_IQ_LIMIT_MA > 0 && MOTOR_SPEED_CTRL_IQ_LIMIT_MA <= MOTOR_CURRENT_CTRL_MAX_COMMAND_MA)) return -1;
     speed_pi.kp = MOTOR_SPEED_KP; speed_pi.ki = MOTOR_SPEED_KI;
     speed_pi.limit = MOTOR_SPEED_CTRL_IQ_LIMIT_MA;
@@ -37,15 +34,13 @@ void pmsm_speed_ctrl_observe(float speed_counts_s)
     if (!pmsm_speed_monitor.feedback_valid) pmsm_speed_monitor.feedback_counts_s = speed_counts_s;
     else pmsm_speed_monitor.feedback_counts_s += MOTOR_SPEED_FILTER_ALPHA *
         (speed_counts_s - pmsm_speed_monitor.feedback_counts_s);
-    pmsm_speed_monitor.feedback_output_rpm = pmsm_speed_monitor.feedback_counts_s / counts_s_per_output_rpm;
     pmsm_speed_monitor.feedback_valid = true;
 }
 
 void pmsm_speed_ctrl_reset_feedback(void)
 {
     pmsm_speed_monitor.feedback_valid = false;
-    pmsm_speed_monitor.raw_counts_s = pmsm_speed_monitor.feedback_counts_s =
-        pmsm_speed_monitor.feedback_output_rpm = 0;
+    pmsm_speed_monitor.raw_counts_s = pmsm_speed_monitor.feedback_counts_s = 0;
 }
 
 int pmsm_speed_ctrl_step(void)
@@ -58,10 +53,10 @@ int pmsm_speed_ctrl_step(void)
     return 0;
 }
 
-int pmsm_speed_ctrl_set_target(float output_rpm, float initial_iq_ma)
+int pmsm_speed_ctrl_set_target(float target_counts_s, float initial_iq_ma)
 {
-    if (!speed_finite(output_rpm) || !speed_finite(initial_iq_ma) ||
-        output_rpm > MOTOR_SPEED_CTRL_MAX_OUTPUT_RPM || output_rpm < -MOTOR_SPEED_CTRL_MAX_OUTPUT_RPM) return -1;
+    if (!speed_finite(target_counts_s) || !speed_finite(initial_iq_ma) ||
+        target_counts_s > MOTOR_SPEED_CTRL_MAX_COUNTS_S || target_counts_s < -MOTOR_SPEED_CTRL_MAX_COUNTS_S) return -1;
     if (!pmsm_speed_monitor.speed_mode) {
         pmsm_pi_reset(&speed_pi);
         if (initial_iq_ma > speed_pi.limit) initial_iq_ma = speed_pi.limit;
@@ -70,8 +65,7 @@ int pmsm_speed_ctrl_set_target(float output_rpm, float initial_iq_ma)
         pmsm_speed_monitor.iq_ref_ma = initial_iq_ma;
     }
     pmsm_speed_monitor.speed_mode = true;
-    pmsm_speed_monitor.target_output_rpm = output_rpm;
-    pmsm_speed_monitor.target_counts_s = output_rpm * counts_s_per_output_rpm;
+    pmsm_speed_monitor.target_counts_s = target_counts_s;
     return 0;
 }
 
@@ -87,7 +81,7 @@ void pmsm_speed_ctrl_stop(void)
 {
     pmsm_pi_reset(&speed_pi);
     pmsm_speed_monitor.running = false;
-    pmsm_speed_monitor.target_output_rpm = pmsm_speed_monitor.target_counts_s = 0;
+    pmsm_speed_monitor.target_counts_s = 0;
     pmsm_speed_monitor.iq_ref_ma = 0;
     pmsm_speed_monitor.current_limited = false;
 }

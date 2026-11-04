@@ -43,12 +43,17 @@
 #define MOTOR_CURRENT_FILTER_ALPHA 0.2f /* 电流一阶低通系数，范围(0,1]，1=不滤波。 */
 #define MOTOR_SPEED_FILTER_ALPHA 0.1f /* 标称测速周期的低通系数，范围(0,1]。 */
 
-/* ===== 速度环：原工程PI，命令单位为减速器输出轴rpm ===== */
+/* ===== 速度环：内部给定/反馈均为电机轴编码器计数/秒 ===== */
 #define MOTOR_SPEED_LOOP_HZ 1000u
 #define MOTOR_SPEED_KP 0.8058608f
 #define MOTOR_SPEED_KI 0.008058608f
-#define MOTOR_SPEED_CTRL_MAX_OUTPUT_RPM 100.0f /* 命令范围，低于实际超速保护；不改变保护门限。 */
+#define MOTOR_SPEED_CTRL_MAX_COUNTS_S (12.9166667f * MOTOR_ABZ_COUNTS_PER_REV) /* 电机轴775rpm；当前减速比下为输出轴100rpm。 */
 #define MOTOR_SPEED_CTRL_IQ_LIMIT_MA 1000.0f /* 速度PI自身的正负输出上限。 */
+/* 位置环沿用原工程每外环拍输出的PI尺度，随后乘外环Hz生成计数/秒。 */
+#define MOTOR_POSITION_KP 0.00205f /* 原工程0.0205；当前级联先用其1/10，须上板整定。 */
+#define MOTOR_POSITION_KI 0.0f
+#define MOTOR_POSITION_OUTPUT_LIMIT_COUNTS_PER_TICK 10.0f
+#define MOTOR_POSITION_MAX_COMMAND_COUNTS (1000.0f * MOTOR_ABZ_COUNTS_PER_REV) /* 绝对目标±1000电机轴转。 */
 #if MOTOR_SPEED_LOOP_HZ == 0 || MOTOR_PWM_FREQUENCY_HZ % MOTOR_SPEED_LOOP_HZ != 0
 #error "Current-loop frequency must be divisible by speed-loop frequency"
 #endif
@@ -129,8 +134,8 @@
 #if MOTOR_CURRENT_ALIGN_RAMP_MS == 0 || MOTOR_CURRENT_ALIGN_SWEEP_MS == 0 || MOTOR_CURRENT_ALIGN_STABLE_MS == 0 || MOTOR_CURRENT_ALIGN_TIMEOUT_MS == 0
 #error "Current alignment times must be positive"
 #endif
-#if MOTOR_POLE_PAIRS > (0xffffffffu / MOTOR_ABZ_COUNTS_PER_REV)
-#error "Electrical phase product must fit uint32_t"
+#if MOTOR_POLE_PAIRS == 0 || MOTOR_POLE_PAIRS > (0xffffffffu / MOTOR_ABZ_COUNTS_PER_REV)
+#error "Pole pairs must be positive and electrical phase product must fit uint32_t"
 #endif
 #if MOTOR_CURRENT_ALIGN_POSITION_TOLERANCE_COUNTS >= MOTOR_ABZ_COUNTS_PER_REV / 2u
 #error "Alignment position tolerance must be less than half a revolution"
@@ -140,7 +145,7 @@
 #error "Invalid alignment current qualification window"
 #endif
 
-/* ===== 7. VOFA参数：固定10通道，改波特率后上位机也需同步 ===== */
+/* ===== 7. VOFA参数：固定12通道，改波特率后上位机也需同步 ===== */
 #ifndef MOTOR_VOFA_BAUDRATE
 #define MOTOR_VOFA_BAUDRATE 115200u /* VOFA 串口波特率，单位 bit/s；上位机必须选择相同数值。 */
 #endif
