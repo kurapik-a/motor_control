@@ -1,10 +1,13 @@
-/* 电压开环验证：上电关桥，调试器/VOFA请求后执行反Park+SVPWM，上传编码器。 */
+/* 上电关桥；ENABLE默认启动电流对齐/闭环，配置可切回原电压开环。 */
 #include "board.h"
 #include "encoder.h"
 #include "adc.h"
 #include "pwm.h"
 #include "motor_vofa.h"
+#if !MOTOR_CONTROL_USE_CURRENT_LOOP
 #include "pwm_test.h"
+#endif
+#include "pmsm_current_ctrl.h"
 
 /* 调试器中查看编码器初始化/读取结果；含义见 encoder.h。 */
 volatile int encoder_result;
@@ -13,6 +16,7 @@ volatile int pwm_result;
 /* 调试器查看 ADC 返回值及采样/零偏状态；电流有效性见 current_valid。 */
 volatile int adc_result;
 volatile adc_data_t adc_sample;
+volatile int current_ctrl_result;
 
 int main(void)
 {
@@ -46,12 +50,20 @@ int main(void)
         }
     }
 
+#if MOTOR_CONTROL_USE_CURRENT_LOOP
+    current_ctrl_result = pmsm_current_ctrl_init();
+    if (current_ctrl_result != 0) { while (1) {} }
+#endif
     while (1)
     {
         adc_poll(); /* 先处理首次/延期重臂；采样仍由PWM硬件触发。 */
         adc_result = adc_read(&adc_data);
         adc_sample = adc_data;
-        pwm_test_poll(); /* 调试器请求启动；检查采样、过流和限时，默认不运行。 */
+#if MOTOR_CONTROL_USE_CURRENT_LOOP
+        pmsm_current_ctrl_poll();
+#else
+        pwm_test_poll();
+#endif
         encoder_result = encoder_read(&sample);
         if (encoder_result == 0)
         {

@@ -54,6 +54,25 @@
 #define MOTOR_POSITION_COMMAND_COUNTS_PER_REV 10000u /* 原位置命令接口每编码器轴一圈的内部刻度，不是 ABZ 硬件脉冲数。 */
 
 /* ===== 4. 周期、滤波：改频率后需重新核对 Ki 与采样时序 ===== */
+#ifndef MOTOR_CONTROL_USE_CURRENT_LOOP
+#define MOTOR_CONTROL_USE_CURRENT_LOOP 1 /* 1=ENABLE启动电流闭环；0=保留原电压开环测试。 */
+#endif
+#define MOTOR_CURRENT_CTRL_DEFAULT_IQ_MA 0.0f /* 对齐后默认零转矩；SET,CURRENT_MA设置Iq。 */
+#define MOTOR_CURRENT_CTRL_MAX_COMMAND_MA 1000.0f /* 初次闭环调试的正负Iq命令限幅。 */
+#define MOTOR_CURRENT_CTRL_SLEW_MA_S 1600.0f /* Id退出对齐及Iq目标缓升速率，mA/s。 */
+#define MOTOR_CURRENT_CTRL_VOLTAGE_LIMIT_TICKS 500.0f /* |Ud|+|Uq|保守限幅，原SVPWM电压计数尺度。 */
+#define MOTOR_CURRENT_CTRL_BUDGET_US 25u /* 新帧控制计算到PWM提交的最大预算。 */
+#define MOTOR_CURRENT_CTRL_WATCHDOG_US 100u /* PWM独立中断检查ADC控制心跳。 */
+#define MOTOR_CURRENT_ALIGN_CURRENT_MA 800.0f /* 固定电角度d轴对齐电流，mA。 */
+#define MOTOR_CURRENT_ALIGN_RAMP_MS 500u
+#define MOTOR_CURRENT_ALIGN_SWEEP_MS 500u /* 对齐角由90度缓移到0度。 */
+#define MOTOR_CURRENT_ALIGN_STABLE_MS 200u /* 电流与速度满足条件的连续时长。 */
+#define MOTOR_CURRENT_ALIGN_WINDOW_GOOD_PERCENT 99u /* 稳定窗口内电流合格比例；过流保护仍逐拍执行。 */
+#define MOTOR_CURRENT_ALIGN_FINAL_GOOD_MS 10u /* 完成对齐前须连续电流合格的末段时长。 */
+#define MOTOR_CURRENT_ALIGN_POSITION_TOLERANCE_COUNTS 2u /* 稳定窗口允许的编码器计数摆动，含量化边界±1计数。 */
+#define MOTOR_CURRENT_ALIGN_TIMEOUT_MS 3000u
+#define MOTOR_CURRENT_ALIGN_ERROR_MA 200.0f /* Id误差及|Iq|门限；不是相电流过流门限。 */
+#define MOTOR_CURRENT_ALIGN_MAX_SPEED_COUNTS_S (0.02f * MOTOR_ABZ_COUNTS_PER_REV) /* 稳定窗口平均速度上限，不用单拍差分判静止。 */
 #define MOTOR_PWM_FREQUENCY_HZ 20000u   /* PWM 及电流环频率，单位 Hz；20000 Hz 对应每拍 50 μs。 */
 #define MOTOR_SPEED_LOOP_HZ 1000u       /* 速度/位置外环频率，单位 Hz；1000 Hz 对应每拍 1 ms。 */
 #define MOTOR_SPEED_ESTIMATE_HZ 1000u /* 主循环标称测速频率，Hz；速度按实际经过时间计算。 */
@@ -134,7 +153,7 @@
 #define MOTOR_PROTECT_PHASE_ENABLE 1
 #endif
 #ifndef MOTOR_PROTECT_DQ_ENABLE
-#define MOTOR_PROTECT_DQ_ENABLE 0 /* 接入Clarke/Park及Id/Iq有效标志后再开启。 */
+#define MOTOR_PROTECT_DQ_ENABLE MOTOR_CONTROL_USE_CURRENT_LOOP /* 正式闭环已提供Id/Iq有效反馈。 */
 #endif
 #ifndef MOTOR_PROTECT_ENCODER_ENABLE
 #define MOTOR_PROTECT_ENCODER_ENABLE 1 /* 有效性/新鲜度及正负实际超速；位置为0不是断线。 */
@@ -148,8 +167,8 @@
 #ifndef MOTOR_PROTECT_TEMP_ENABLE
 #define MOTOR_PROTECT_TEMP_ENABLE 1 /* 阈值使用上方MOTOR_TEMP_*，仍为ADC码，非摄氏度。 */
 #endif
-#define MOTOR_PROTECT_PHASE_LIMIT_MA ((float)MOTOR_NORMAL_CURRENT_TRIP_MA) /* 沿用原正常门限，当前30000mA；不引用测试参数。 */
-#define MOTOR_PROTECT_DQ_LIMIT_MA ((float)MOTOR_NORMAL_CURRENT_TRIP_MA) /* Id/Iq绝对值门限。 */
+#define MOTOR_PROTECT_PHASE_LIMIT_MA 3000.0f /* 首次闭环调试采用3A；独立于pwm_test参数。 */
+#define MOTOR_PROTECT_DQ_LIMIT_MA 3000.0f /* Id/Iq绝对值门限。 */
 #define MOTOR_PROTECT_SPEED_LIMIT_COUNTS_S (MOTOR_MAX_SPEED_RPS * MOTOR_ABZ_COUNTS_PER_REV) /* 电机轴20r/s，当前AB每圈4000计数。 */
 #define MOTOR_PROTECT_CURRENT_MAX_AGE_US 100u /* 电流数据最大年龄，微秒。 */
 #define MOTOR_PROTECT_ENCODER_MAX_AGE_MS 5u /* 编码器数据最大年龄，毫秒。 */
@@ -164,6 +183,19 @@
 #endif
 #if MOTOR_PROTECT_SPEED_ERROR_ENABLE && !MOTOR_PROTECT_ENCODER_ENABLE
 #error "Speed-error protection requires encoder protection"
+#endif
+#if MOTOR_CURRENT_ALIGN_RAMP_MS == 0 || MOTOR_CURRENT_ALIGN_SWEEP_MS == 0 || MOTOR_CURRENT_ALIGN_STABLE_MS == 0 || MOTOR_CURRENT_ALIGN_TIMEOUT_MS == 0
+#error "Current alignment times must be positive"
+#endif
+#if MOTOR_POLE_PAIRS > (0xffffffffu / MOTOR_ABZ_COUNTS_PER_REV)
+#error "Electrical phase product must fit uint32_t"
+#endif
+#if MOTOR_CURRENT_ALIGN_POSITION_TOLERANCE_COUNTS >= MOTOR_ABZ_COUNTS_PER_REV / 2u
+#error "Alignment position tolerance must be less than half a revolution"
+#endif
+#if MOTOR_CURRENT_ALIGN_WINDOW_GOOD_PERCENT < 1u || MOTOR_CURRENT_ALIGN_WINDOW_GOOD_PERCENT > 100u || \
+    MOTOR_CURRENT_ALIGN_FINAL_GOOD_MS == 0u || MOTOR_CURRENT_ALIGN_FINAL_GOOD_MS > MOTOR_CURRENT_ALIGN_STABLE_MS
+#error "Invalid alignment current qualification window"
 #endif
 
 /* ===== 9. VOFA 参数：通道数见 motor_vofa.h，改波特率后上位机也需同步 ===== */

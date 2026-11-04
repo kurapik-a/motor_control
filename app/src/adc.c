@@ -58,6 +58,11 @@ typedef union
 
 extern uint32_t hpm_core_clock;
 static adc_data_t latest;
+static adc_control_callback_t control_callback;
+#ifndef ADC_AUX_BUS_FLAG
+#define ADC_AUX_BUS_FLAG (1u << BOARD_APP_ADC16_UDC_CH)
+#define ADC_AUX_TEMP_FLAG (1u << BOARD_APP_ADC16_TEMP_CH)
+#endif
 static bool initialized, pending, hardware_ready;
 /* 首次重臂若延期，从前台首次接管时开始监视；不把其它外设初始化算成采样停滞。 */
 static bool rearm_watch_started;
@@ -82,6 +87,7 @@ int adc_init(void) ATTR_RAMFUNC;
 int adc_poll(void) ATTR_RAMFUNC;
 int adc_read(adc_data_t *data) ATTR_RAMFUNC;
 int adc_start_offset_calibration(void) ATTR_RAMFUNC;
+static void capture_aux_flags(uint32_t flags) ATTR_RAMFUNC;
 
 static bool positive_finite(float value) { return value > 0.0f && value <= FLT_MAX; }
 static int current_status(void)
@@ -105,6 +111,7 @@ static int latch_fault(int code)
     fault = code;
     latest.trigger_armed = latest.sample_valid = latest.current_valid = false;
     latest.fault_code = code;
+    if (control_callback) control_callback(&latest, code);
     return code;
 }
 
@@ -114,6 +121,13 @@ static int init_channel(ADC16_Type *ptr, uint8_t channel, uint32_t cycles)
     adc16_get_channel_default_config(&cfg);
     cfg.ch = channel;
     cfg.sample_cycle = cycles;
+    if (ptr == ADC_U && (channel == BOARD_APP_ADC16_UDC_CH || channel == BOARD_APP_ADC16_TEMP_CH)) {
+        /* 反向窗口使每次转换产生WDOG事件；只轮询标志，不打开WDOG中断。
+         * 用真实转换事件判定辅助结果的新鲜度，不以读寄存器成功冒充新采样。 */
+        cfg.thshdh = 0u;
+        cfg.thshdl = 65535u;
+        cfg.wdog_int_en = false;
+    }
     return adc16_init_channel(ptr, &cfg) == status_success ? 0 : -4;
 }
 
@@ -251,6 +265,7 @@ static void update_sample(uint16_t u, uint16_t v)
 static int arm_frame(void)
 {
     /* DMA清理放在取得PWM时刻之前，避免准备工作消耗刚检查过的边沿余量。 */
+    capture_aux_flags(adc16_get_status_flags(ADC_U));
     dma_u[ADC_DMA_INDEX] = 0;
     dma_v[ADC_DMA_INDEX] = 0;
     adc16_clear_status_flags(ADC_U, UINT32_MAX);
@@ -303,6 +318,7 @@ static int service_frame(void)
     }
     uint32_t flags_u = adc16_get_status_flags(ADC_U);
     uint32_t flags_v = adc16_get_status_flags(ADC_V);
+    capture_aux_flags(flags_u);
     if ((flags_u | flags_v) & ADC_ERRORS) return latch_fault(-8);
     if (flags_u & adc16_event_trig_complete) {
         completion_mask |= 1u;
@@ -347,6 +363,7 @@ static int service_frame(void)
     latest.publish_cycles = hpm_csr_get_core_cycle();
     last_progress_cycles = latest.publish_cycles;
     if (latest.offset_state == ADC_OFFSET_FAILED) return latch_fault(-5);
+    if (control_callback) control_callback(&latest, 0);
     arm_frame();
     return current_status();
 }
@@ -453,3 +470,36 @@ static void adc_u_isr(void) { ++latest.irq_count; service_frame(); }
 static void adc_v_isr(void) { ++latest.irq_count; service_frame(); }
 SDK_DECLARE_EXT_ISR_M(IRQn_ADC0, adc_u_isr)
 SDK_DECLARE_EXT_ISR_M(IRQn_ADC1, adc_v_isr)
+
+static void capture_aux_flags(uint32_t flags)
+{
+    if (flags & ADC_AUX_BUS_FLAG) {
+#if defined(ADC_HOST_TEST)
+        latest.bus_raw = ADC_U->period_results[BOARD_APP_ADC16_UDC_CH];
+#else
+        latest.bus_raw = ADC16_PRD_CFG_PRD_RESULT_CHAN_RESULT_GET(ADC_U->PRD_CFG[BOARD_APP_ADC16_UDC_CH].PRD_RESULT);
+#endif
+        latest.bus_cycles = hpm_csr_get_core_cycle();
+        latest.bus_valid = true;
+    }
+    if (flags & ADC_AUX_TEMP_FLAG) {
+#if defined(ADC_HOST_TEST)
+        latest.temperature_raw = ADC_U->period_results[BOARD_APP_ADC16_TEMP_CH];
+#else
+        latest.temperature_raw = ADC16_PRD_CFG_PRD_RESULT_CHAN_RESULT_GET(ADC_U->PRD_CFG[BOARD_APP_ADC16_TEMP_CH].PRD_RESULT);
+#endif
+        latest.temperature_cycles = hpm_csr_get_core_cycle();
+        latest.temperature_valid = true;
+    }
+    if (flags & (ADC_AUX_BUS_FLAG | ADC_AUX_TEMP_FLAG))
+        adc16_clear_status_flags(ADC_U, flags & (ADC_AUX_BUS_FLAG | ADC_AUX_TEMP_FLAG));
+}
+
+int adc_set_control_callback(adc_control_callback_t callback)
+{
+    uint32_t state = disable_global_irq(CSR_MSTATUS_MIE_MASK);
+    if (pwm_is_enabled()) { restore_global_irq(state); return -9; }
+    control_callback = callback;
+    restore_global_irq(state);
+    return 0;
+}

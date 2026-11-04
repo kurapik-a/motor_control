@@ -3,15 +3,21 @@
 #define MOTOR_VOFA_H
 #include "encoder.h"
 
-/* JustFloat 三通道，全部为减速器输出轴数据：
+/* 开环JustFloat三通道，全部为减速器输出轴数据：
  * CH0=累计角度（度）；CH1=原始转速（rpm）；CH2=滤波转速（rpm）。 */
+#if MOTOR_CONTROL_USE_CURRENT_LOOP
+/* 闭环CH0~7：Id目标/实际、Iq目标/实际(mA)、Ud/Uq(计数)、输出轴rpm、故障位。 */
+#define MOTOR_VOFA_CHANNEL_COUNT 8u
+#else
 #define MOTOR_VOFA_CHANNEL_COUNT 3u
+#endif
 /* 上传频率，100 Hz 对应每 10 ms 一帧，与约 1 ms 的测速更新相互独立。 */
 #define MOTOR_VOFA_SAMPLE_HZ 100u
 
 /* board_init() 后调用一次；0=成功，负数=初始化失败。 */
 int motor_vofa_init(void);
-/* 主循环持续调用，处理ENABLE,1开环启动、ENABLE,0/STOP停机，上传输出轴数据。
+/* 主循环持续调用，ENABLE,1按配置启动电流对齐/闭环或开环，ENABLE,0/STOP停机。
+ * 闭环支持SET,CURRENT_MA及CLEAR_FAULT，上传通道见上方定义。
  * 命令以CR/LF结束；启动执行ADC/过流门禁，失败不排队，不在中断内调用。 */
 void motor_vofa_poll(void);
 /* 复制一次 encoder_read() 返回的电机轴采样，可从本核前台或中断调用。

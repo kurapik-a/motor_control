@@ -1,6 +1,9 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 #include "motor_vofa.h"
+#if !MOTOR_CONTROL_USE_CURRENT_LOOP
 #include "pwm_test.h"
+#endif
+#include "pmsm_current_ctrl.h"
 #include "board.h"
 #include "hpm_clock_drv.h"
 #include "hpm_csr_drv.h"
@@ -40,7 +43,7 @@ static int finite_value(float value)
     return value >= -FLT_MAX && value <= FLT_MAX;
 }
 
-/* 协议库在前台poll中调用；直接经过开环启动门禁，返回实际接受/拒绝结果。
+/* 协议库在前台poll中调用；经过所选控制模式的启动门禁，返回实际接受/拒绝结果。
  * 不打印文本回执，避免混入JustFloat上传帧。 */
 static int motor_vofa_command(void *user, const vofa_command_t *command)
 {
@@ -50,27 +53,47 @@ static int motor_vofa_command(void *user, const vofa_command_t *command)
     switch (command->kind) {
     case VOFA_CMD_ENABLE:
         if (command->value == 1.0f) {
+#if MOTOR_CONTROL_USE_CURRENT_LOOP
+            result = pmsm_current_ctrl_start();
+#else
             pwm_test_request = 0;
             result = pwm_test_start(MOTOR_PWM_TEST_ELECTRICAL_HZ,
                                     MOTOR_PWM_TEST_AMPLITUDE, MOTOR_PWM_TEST_DURATION_MS);
+#endif
             break;
         }
         if (command->value != 0.0f) break;
         /* ENABLE,0与STOP都立即停机并取消尚未消费的调试器启动请求。 */
+#if MOTOR_CONTROL_USE_CURRENT_LOOP
+        pmsm_current_ctrl_stop();
+#else
         pwm_test_request = 0;
         pwm_test_stop();
+#endif
         result = VOFA_OK;
         break;
     case VOFA_CMD_STOP:
+#if MOTOR_CONTROL_USE_CURRENT_LOOP
+        pmsm_current_ctrl_stop();
+#else
         pwm_test_request = 0;
         pwm_test_stop();
+#endif
         result = VOFA_OK;
         break;
     case VOFA_CMD_PING:
         result = VOFA_OK;
         break;
+#if MOTOR_CONTROL_USE_CURRENT_LOOP
+    case VOFA_CMD_CURRENT_MA:
+        result = pmsm_current_ctrl_set_target(command->value);
+        break;
+    case VOFA_CMD_CLEAR_FAULT:
+        result = pmsm_current_ctrl_clear_fault();
+        break;
+#endif
     default:
-        break; /* 速度、位置、电流目标和PID命令尚未接入。 */
+        break; /* 速度、位置和在线PID命令尚未接入。 */
     }
     motor_vofa_command_result = result;
     return result;
@@ -117,7 +140,11 @@ int motor_vofa_init(void)
     vofa_debug_config_default(&config);
     vofa_hpm_uart_bind(&config, &uart_port);
     config.channels = MOTOR_VOFA_CHANNEL_COUNT;
-    /* ENABLE仅启动限时电压开环，不代表闭合电流环。 */
+#if MOTOR_CONTROL_USE_CURRENT_LOOP
+    config.current_ma.min = -MOTOR_CURRENT_CTRL_MAX_COMMAND_MA;
+    config.current_ma.max = MOTOR_CURRENT_CTRL_MAX_COMMAND_MA;
+#endif
+    /* ENABLE按配置选择电流对齐/闭环或原限时电压开环。 */
     config.on_command = motor_vofa_command;
     motor_vofa_io_result = vofa_debug_init(&motor_vofa_context, &config);
     if (motor_vofa_io_result != VOFA_OK) {
@@ -156,9 +183,18 @@ void motor_vofa_poll(void)
         motor_vofa_publish_result = conversion_result == -3 ? VOFA_ENONFINITE : VOFA_EINVAL;
         return;
     }
+#if MOTOR_CONTROL_USE_CURRENT_LOOP
+    pmsm_current_status_t current;
+    pmsm_current_ctrl_get_status(&current);
+    values[0] = current.id_ref_ma; values[1] = current.id_ma;
+    values[2] = current.iq_ref_ma; values[3] = current.iq_ma;
+    values[4] = current.ud; values[5] = current.uq;
+    values[6] = output.speed_rpm; values[7] = (float)(current.faults | current.inhibit_faults);
+#else
     values[0] = output.angle_deg;
     values[1] = output.speed_rpm;
     values[2] = output.speed_filtered_rpm;
+#endif
     motor_vofa_publish_result = vofa_debug_publish(
         &motor_vofa_context, values, MOTOR_VOFA_CHANNEL_COUNT);
 }

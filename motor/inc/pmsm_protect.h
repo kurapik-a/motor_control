@@ -3,6 +3,7 @@
 #define PMSM_PROTECT_H
 #include <stdbool.h>
 #include <stdint.h>
+#include "motor_rt.h"
 
 /* 前7位沿用原工程含义；过流同时检查正负方向及三相，而非只检查正Iq。 */
 typedef enum {
@@ -56,10 +57,10 @@ void pmsm_protect_init(pmsm_protect_t *protect);
  * 关桥时缺少/过旧数据只阻止使能；有效数据超限仍锁存。
  * 运行时任何启用的检查失败都锁存。无硬件副作用，不自动关桥或复位PI。
  * 同一状态仅由一个上下文访问；上层决定调用时机，当前不使用旧*_TICKS降采样。 */
-uint32_t pmsm_protect_check(pmsm_protect_t *protect, const pmsm_protect_input_t *input);
+uint32_t pmsm_protect_check(pmsm_protect_t *protect, const pmsm_protect_input_t *input) MOTOR_RAMFUNC;
 /* 只查询最近检查结果；使能前必须以新鲜输入再次check。 */
-bool pmsm_protect_can_enable(const pmsm_protect_t *protect);
+bool pmsm_protect_can_enable(const pmsm_protect_t *protect) MOTOR_RAMFUNC;
 /* 0=清除成功；-1=空指针；-2=仍在运行；-3=当前检查未通过。
  * 仅关桥且所有启用检查通过才清除；不恢复PWM、不重置ADC硬件故障。 */
-int pmsm_protect_clear(pmsm_protect_t *protect, const pmsm_protect_input_t *input);
+int pmsm_protect_clear(pmsm_protect_t *protect, const pmsm_protect_input_t *input) MOTOR_RAMFUNC;
 #endif

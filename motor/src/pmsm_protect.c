@@ -1,13 +1,17 @@
+#if defined(__GNUC__)
+#pragma GCC optimize ("O2")
+#endif
 /* Copyright (c) 2025 hpmicro. SPDX-License-Identifier: BSD-3-Clause */
 /* 参考原pmsm_protect.c的保护项目，独立于旧MOTOR_PARA及当前测试状态机。 */
 #include "pmsm_protect.h"
 #include "motor_config.h"
 #include <float.h>
 
-static bool finite_value(float value) { return value >= -FLT_MAX && value <= FLT_MAX; }
-static bool positive(float value) { return finite_value(value) && value > 0.0f; }
-static bool over_limit(float value, float limit) { return value > limit || value < -limit; }
+MOTOR_INLINE bool finite_value(float value) { return value >= -FLT_MAX && value <= FLT_MAX; }
+MOTOR_INLINE bool positive(float value) { return finite_value(value) && value > 0.0f; }
+MOTOR_INLINE bool over_limit(float value, float limit) { return value > limit || value < -limit; }
 
+static uint32_t evaluate(const pmsm_protect_input_t *input) MOTOR_RAMFUNC;
 static uint32_t evaluate(const pmsm_protect_input_t *input)
 {
     uint32_t faults = 0;

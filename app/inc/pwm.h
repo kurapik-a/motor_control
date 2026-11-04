@@ -16,9 +16,9 @@ int pwm_set_duty(float u, float v, float w); /* 三相占空比，范围 0~1；�
 int pwm_enable(void);         /* 显式恢复三相输出；调用方负责标定状态、故障门禁及控制目标。 */
 void pwm_disable(void);       /* 立即强制六路为低电平；计数器和预留触发点继续运行。 */
 
-/* 后续 FOC 接口：回调在 PWM0 比较中断中以 PWM 频率调用，禁止阻塞操作。
+/* PWM周期回调：正式电流环用于独立心跳看门狗；FOC计算由完整ADC帧驱动。
  * NULL=关闭该中断并关闭桥臂；初始化默认 NULL，绑定回调不会自动使能桥臂。
- * 此回调保留给后续FOC；同步采样使用独立ADC完成中断，不占用它。 */
+ * 同步采样使用独立ADC完成中断，不占用它。 */
 typedef void (*pwm_current_loop_callback_t)(void);
 int pwm_set_current_loop_callback(pwm_current_loop_callback_t callback);
 /* ADC模块独占以下接口；不改变桥臂使能。timing返回CPU周期计数。

@@ -6,7 +6,7 @@
 #include "pwm.h"
 #include "adc.h"
 #include "motor_config.h"
-#include "pmsm_control.h"
+#include "pmsm_foc.h"
 #include "hpm_soc.h"
 #include "hpm_csr_drv.h"
 #include "hpm_interrupt.h"

@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.13)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # SDK paths come from build.ps1 or the environment; project may live outside hpm_apps.
-# 编码器移植阶段默认只编译应用和 VOFA；保留的电机/core 接口补齐后再开启。
+# 新FOC/PI/电流环/保护默认编译；以下开关仅管理保留的旧motor/core扩展。
 option(MOTOR_CONTROL_BUILD_MOTOR "Build retained motor initialization and core extensions" OFF)
 set(CONFIG_A_LIBMOTORCTRL ${MOTOR_CONTROL_BUILD_MOTOR})
 if(MOTOR_CONTROL_BUILD_MOTOR)
@@ -34,9 +34,9 @@ sdk_inc(../motor/inc ../core/inc inc)
 
 sdk_app_src(src/main.c src/motor_vofa.c src/encoder.c
     src/adc.c
-    src/pwm.c src/pwm_test.c ../motor/src/pmsm_control.c ../motor/src/pid.c
-    ../motor/src/pmsm_protect.c)
-# PI为独立纯算法；电压开环由调试器/VOFA请求启动，不调用PI、不自动使能桥臂。
+    src/pwm.c src/pwm_test.c ../motor/src/pmsm_foc.c ../motor/src/pid.c
+    ../motor/src/pmsm_protect.c ../motor/src/pmsm_current_ctrl.c)
+# 上电不自动使能；ENABLE按MOTOR_CONTROL_USE_CURRENT_LOOP选择正式电流环或测试。
 
 # 仅延后编译，不删除这些初始化和扩展源码。
 if(MOTOR_CONTROL_BUILD_MOTOR)

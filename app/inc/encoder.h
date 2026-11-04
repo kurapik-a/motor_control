@@ -74,4 +74,6 @@ int encoder_to_output_axis(const encoder_data_t *motor, encoder_output_data_t *o
 /* 将当前位置设为零，同时清除速度和滤波历史；不是寻找物理 Z 零位。
  * 电角度零参考也随清零改变；后续 FOC 对齐应确定它与转子磁极的关系。 */
 int encoder_reset(void);
+/* 实时控制只读当前圈内相位，不触碰前台锁存寄存器或测速历史，可由ADC回调调用。 */
+int encoder_read_phase(uint32_t *phase);
 #endif /* ENCODER_H */

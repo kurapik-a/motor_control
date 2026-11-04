@@ -23,6 +23,7 @@ static inline __attribute__((always_inline)) void pwmv2_disable_force_by_softwar
 static inline __attribute__((always_inline)) void pwmv2_clear_cmp_irq_status(PWMV2_Type *pwm_x, uint32_t mask);
 static inline __attribute__((always_inline)) void pwmv2_enable_cmp_irq(PWMV2_Type *pwm_x, uint8_t cmp_index);
 static inline __attribute__((always_inline)) void pwmv2_disable_cmp_irq(PWMV2_Type *pwm_x, uint8_t cmp_index);
+static inline __attribute__((always_inline)) uint32_t pwmv2_get_cmp_irq_status(PWMV2_Type *pwm_x);
 static inline __attribute__((always_inline)) void pwmv2_force_output(PWMV2_Type *pwm_x, pwm_channel_t chn, pwm_force_mode_t mode, bool invert);
 static inline __attribute__((always_inline)) void pwmv2_force_update_time_by_shadow(PWMV2_Type *pwm_x, pwm_channel_t chn, pwm_force_shadow_trigger_t update_time);
 static inline __attribute__((always_inline)) void pwmv2_enable_force_by_software(PWMV2_Type *pwm_x, pwm_channel_t chn);
@@ -44,6 +45,8 @@ void pwm_disable(void) ATTR_RAMFUNC;
 int pwm_enable(void) ATTR_RAMFUNC;
 int pwm_set_counts(uint32_t u, uint32_t v, uint32_t w) ATTR_RAMFUNC;
 int pwm_set_current_loop_callback(pwm_current_loop_callback_t callback) ATTR_RAMFUNC;
+uint32_t pwm_get_reload(void) ATTR_RAMFUNC;
+bool pwm_is_enabled(void) ATTR_RAMFUNC;
 
 /* 保留原工程的配对波形、比较器和影子寄存器分配。 */
 static void init_waveforms(PWMV2_Type *ptr, uint32_t PWM_PRD, uint8_t CMP_SHADOW_REGISTER_UPDATE_TYPE, uint8_t CMP_PWM_REGISTER_UPDATE_TYPE, uint8_t CMP_SOURCE)

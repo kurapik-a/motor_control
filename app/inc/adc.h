@@ -24,8 +24,10 @@ typedef struct
 {
     uint16_t raw_u;           /* U 相 ADC 完整16位，范围0~65535。 */
     uint16_t raw_v;           /* V 相 ADC 完整16位，范围0~65535。 */
-    uint16_t bus_raw;         /* 前台最近读到的母线周期采样16位码，非同帧电流数据；尚未换算成V。 */
-    uint16_t temperature_raw; /* 前台最近读到的温度周期采样16位码，非同帧电流数据；尚未换算成℃。 */
+    uint16_t bus_raw;         /* 最近母线周期采样16位码，非同帧电流数据；尚未换算成V。 */
+    uint16_t temperature_raw; /* 最近温度周期采样16位码，非同帧电流数据；尚未换算成℃。 */
+    bool bus_valid, temperature_valid; /* 观察到对应通道真实转换事件后才置位。 */
+    uint64_t bus_cycles, temperature_cycles; /* 最近辅助转换事件的软件观察时刻。 */
     uint16_t offset_u;        /* U 相零电流基准，完整16位码。 */
     uint16_t offset_v;        /* V 相零电流基准，完整16位码。 */
     float current_u_ma;       /* 未滤波相电流，mA；方向沿用原工程：零偏减采样码。 */
@@ -66,4 +68,9 @@ int adc_read(adc_data_t *data);
 
 /* 仅在桥臂关闭时接受请求，立即使旧零偏无效；不要求等待采样空隙。 */
 int adc_start_offset_calibration(void);
+/* 新完整帧在发布后、重臂前调用一次；故障时status为负。
+ * 可在ADC中断或adc_poll临界区执行，禁止阻塞/递归访问ADC；回调须在ILM。
+ * 仅桥臂关闭时更换；不移动或替换ADC内部保护。 */
+typedef void (*adc_control_callback_t)(const adc_data_t *sample, int status);
+int adc_set_control_callback(adc_control_callback_t callback);
 #endif /* MOTOR_ADC_H */

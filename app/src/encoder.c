@@ -7,6 +7,11 @@
 #include <stdbool.h>
 #include <limits.h>
 #include <float.h>
+#include "motor_rt.h"
+int encoder_read_phase(uint32_t *phase) MOTOR_RAMFUNC;
+#if defined(__GNUC__)
+static inline __attribute__((always_inline)) uint32_t qeiv2_get_current_count(QEIV2_Type *qeiv2_x, qeiv2_counter_type_t type);
+#endif
 
 #define ENCODER_QEI_BASE BOARD_PMSM0_QEI_BASE
 #define ENCODER_QEI_CLOCK BOARD_BLDC_QEI_CLOCK_SOURCE
@@ -90,6 +95,16 @@ static float electrical_angle_from_phase(uint32_t phase)
     }
 #endif
     return angle;
+}
+
+int encoder_read_phase(uint32_t *phase)
+{
+    uint32_t value;
+    if (!initialized || !phase) return -1;
+    value = QEIV2_COUNT_PH_PHCNT_GET(qeiv2_get_current_count(ENCODER_QEI_BASE, qeiv2_counter_type_phase));
+    if (value >= ENCODER_COUNTS_PER_REV) return -2;
+    *phase = value;
+    return 0;
 }
 
 static void update_speed(int32_t position, uint64_t now)
