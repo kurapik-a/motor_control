@@ -6,6 +6,7 @@
 #include "pmsm_current_ctrl.h"
 #include "pmsm_init.h"
 #include "pmsm_speed_ctrl.h"
+#include "pmsm_position_ctrl.h"
 #include "motor_config.h"
 #include "motor_vofa.h"
 #include "vofa_hpm_uart.h"
@@ -17,6 +18,8 @@
 #define PLANT_RESISTANCE_OHM 0.225f
 #define PLANT_INDUCTANCE_H 0.00026f
 #define PLANT_BUS_V 24.0f
+#define TEST_COUNTS_S_PER_OUTPUT_RPM (MOTOR_ABZ_COUNTS_PER_REV*MOTOR_SPEED_REDUCTION_RATIO/60.0f)
+#define TEST_SPEED_OUTPUT_RPM (pmsm_speed_monitor.feedback_counts_s/TEST_COUNTS_S_PER_OUTPUT_RPM)
 uint32_t hpm_core_clock=1000000;
 static uint64_t cycles;
 static uint32_t cycle_step, phase=3999, pwm_commits;
@@ -59,6 +62,7 @@ int pwm_set_current_loop_callback(pwm_current_loop_callback_t callback) {watchdo
 int adc_read(adc_data_t *data) {*data=sample;return adc_status;}
 int adc_set_control_callback(adc_control_callback_t callback) {CHECK(!enabled);adc_callback=callback;return 0;}
 int encoder_read_phase(uint32_t *value) {*value=phase;return encoder_status;}
+int encoder_read_position(int32_t *value) {*value=mechanical ? (int32_t)floor(plant_position) : (int32_t)phase*MOTOR_ENCODER_DIRECTION;return encoder_status;}
 void board_init_uart(UART_Type *ptr) {(void)ptr;}
 uint32_t clock_get_frequency(int name) {(void)name;return 24000000;}
 int vofa_hpm_uart_init(vofa_hpm_uart_t *port) {return port ? 0 : -1;}
@@ -72,11 +76,6 @@ int vofa_hpm_uart_write(void *user,const uint8_t *data,size_t size) {
 }
 void vofa_hpm_uart_bind(vofa_debug_config_t *config,vofa_hpm_uart_t *port) {
     config->read=vofa_hpm_uart_read;config->write=vofa_hpm_uart_write;config->io_user=port;
-}
-int encoder_to_output_axis(const encoder_data_t *motor,encoder_output_data_t *output) {
-    output->angle_deg=motor->mechanical_angle_deg/MOTOR_SPEED_REDUCTION_RATIO;
-    output->speed_rpm=motor->speed_rpm/MOTOR_SPEED_REDUCTION_RATIO;
-    output->speed_filtered_rpm=motor->speed_filtered_rpm/MOTOR_SPEED_REDUCTION_RATIO;return 0;
 }
 static int command(const char *text) {rx=text;motor_vofa_poll();return motor_vofa_context.stats.last_command_result;}
 static void fresh(void) {
@@ -139,6 +138,9 @@ static void frame(bool follow) {
     if(enabled && pmsm_current_monitor.state==PMSM_CURRENT_RUNNING && pmsm_speed_monitor.speed_mode) {
         CHECK(fabsf(pmsm_current_monitor.iq_ref_ma)<=MOTOR_SPEED_CTRL_IQ_LIMIT_MA);
     }
+    if(enabled && pmsm_position_monitor.position_mode) {
+        CHECK(fabsf(pmsm_position_monitor.speed_ref_counts_s)<=MOTOR_POSITION_OUTPUT_LIMIT_COUNTS_PER_TICK*MOTOR_SPEED_LOOP_HZ);
+    }
     CHECK(!irq_depth);
 }
 static void prepare_to_ready(void) {
@@ -163,12 +165,14 @@ static void zero_and_clear(void) {
 }
 int main(void) {
     unsigned i, count;
-    CHECK(motor_vofa_init()==0 && MOTOR_VOFA_CHANNEL_COUNT==10);
+    CHECK(motor_vofa_init()==0 && MOTOR_VOFA_CHANNEL_COUNT==12);
     CHECK(pmsm_init()==0 && init_order==3 && adc_callback && !enabled);
     CHECK(pmsm_init()==-2); /* 不允许重复初始化清除故障或重新对齐。 */
     pmsm_init_poll();CHECK(pmsm_init_monitor.state==PMSM_INIT_WAIT_SAMPLES && !enabled);
     CHECK(command("ENABLE,1\r")==-3 && !enabled);
     CHECK(command("SET,SPEED_RPM,10\r")==-3);
+    CHECK(command("SET,POSITION_DEG,90\r")==-3);
+    CHECK(command("SET,POSITION_DEG,360001\r")==-1);
     CHECK(command("SET,SPEED_RPM,101\r")==-1);
     CHECK(command("STOP\r")==0);fresh();frame(false);frame(false);
     CHECK(pmsm_init_monitor.state==PMSM_INIT_CANCELLED && !enabled);
@@ -319,38 +323,109 @@ int main(void) {
     CHECK(command("STOP\r")==0);
     mechanical=true;plant_u=plant_v=plant_omega=plant_position=load_torque=0;phase=0;
     CHECK(command("SET,SPEED_RPM,10\r")==0 && pmsm_speed_monitor.speed_mode);
+    CHECK(fabsf(pmsm_speed_monitor.target_counts_s-5166.666667f)<0.01f);
+    CHECK(pmsm_current_ctrl_set_speed_counts_s(MOTOR_SPEED_CTRL_MAX_COUNTS_S+1)==-1);
     CHECK(command("ENABLE,1\r")==0);
     count=pmsm_speed_monitor.updates;
     for(i=0;i<160000;++i)frame(true);
-    printf("Speed +10rpm: feedback=%.3f actual=%.3f Iq=%.1f mA updates=%u\n",pmsm_speed_monitor.feedback_output_rpm,
+    printf("Speed +10rpm: feedback=%.3f actual=%.3f Iq=%.1f mA updates=%u\n",TEST_SPEED_OUTPUT_RPM,
         plant_omega*9.54929658551f/MOTOR_SPEED_REDUCTION_RATIO,pmsm_current_monitor.iq_ma,pmsm_speed_monitor.updates-count);
     CHECK(pmsm_current_monitor.state==PMSM_CURRENT_RUNNING && !pmsm_current_monitor.faults);
     CHECK(pmsm_speed_monitor.updates-count>=7999 && pmsm_speed_monitor.updates-count<=8001);
-    CHECK(fabsf(pmsm_speed_monitor.feedback_output_rpm-10)<0.5f);
+    CHECK(fabsf(TEST_SPEED_OUTPUT_RPM-10)<0.5f);
     CHECK(fabsf(plant_omega*9.54929658551f/MOTOR_SPEED_REDUCTION_RATIO-10)<0.5f);
     load_torque=0.01f;for(i=0;i<120000;++i)frame(true);
-    CHECK(fabsf(pmsm_speed_monitor.feedback_output_rpm-10)<0.5f);
+    CHECK(fabsf(TEST_SPEED_OUTPUT_RPM-10)<0.5f);
     CHECK(fabsf(pmsm_speed_monitor.iq_ref_ma)<=MOTOR_SPEED_CTRL_IQ_LIMIT_MA);
     CHECK(command("SET,SPEED_RPM,-10\r")==0);
     for(i=0;i<200000;++i)frame(true);
-    printf("Speed -10rpm with load: feedback=%.3f Iq=%.1f mA\n",pmsm_speed_monitor.feedback_output_rpm,pmsm_current_monitor.iq_ma);
-    CHECK(fabsf(pmsm_speed_monitor.feedback_output_rpm+10)<0.5f && !pmsm_current_monitor.faults);
+    printf("Speed -10rpm with load: feedback=%.3f Iq=%.1f mA\n",TEST_SPEED_OUTPUT_RPM,pmsm_current_monitor.iq_ma);
+    CHECK(fabsf(TEST_SPEED_OUTPUT_RPM+10)<0.5f && !pmsm_current_monitor.faults);
     CHECK(command("SET,CURRENT_MA,100\r")==0 && !pmsm_speed_monitor.speed_mode);
     frame(true);
     CHECK(command("SET,SPEED_RPM,0\r")==0 && pmsm_speed_monitor.speed_mode && pmsm_speed_monitor.running);
     for(i=0;i<160000;++i)frame(true);
-    CHECK(fabsf(pmsm_speed_monitor.feedback_output_rpm)<0.5f);
+    CHECK(fabsf(TEST_SPEED_OUTPUT_RPM)<0.5f);
     CHECK(command("STOP\r")==0 && !enabled && !pmsm_speed_monitor.running && pmsm_speed_monitor.iq_ref_ma==0);
-    CHECK(pmsm_speed_monitor.target_output_rpm==0);
+    CHECK(pmsm_speed_monitor.target_counts_s==0);
+    {
+        char text[80];
+        int32_t base, goal, hold;
+        uint32_t position_updates, speed_updates;
+        float late_peak;
+        encoder_read_position(&base);goal=base+8000; /* 正向跨两圈；目标相对于对齐零点。 */
+        sprintf(text,"SET,POSITION_DEG,%.3f\r",goal*360.0f/(MOTOR_ABZ_COUNTS_PER_REV*MOTOR_SPEED_REDUCTION_RATIO));
+        CHECK(command(text)==0 && pmsm_position_monitor.position_mode && pmsm_speed_monitor.speed_mode);
+        CHECK(fabsf(pmsm_position_monitor.target_count-goal)<0.1f);
+        CHECK(command("ENABLE,1\r")==0);
+        position_updates=pmsm_position_monitor.updates;speed_updates=pmsm_speed_monitor.updates;
+        late_peak=0;
+        for(i=0;i<400000;++i) {
+            frame(true);
+            if(i>=380000 && fabsf(pmsm_position_monitor.error_count)>late_peak)late_peak=fabsf(pmsm_position_monitor.error_count);
+        }
+        printf("Position +2 turns: target=%d feedback=%d error=%.2f counts\n",goal,pmsm_position_monitor.position_count,pmsm_position_monitor.error_count);
+        CHECK(pmsm_position_monitor.updates-position_updates==20000 && pmsm_speed_monitor.updates-speed_updates==20000);
+        CHECK(fabsf(pmsm_position_monitor.error_count)<5 && !pmsm_current_monitor.faults);
+        CHECK(late_peak<5); /* 不仅检查最后一拍，还检查末段持续稳定。 */
+        goal=-4000; /* 穿过机械零点，到负向绝对位置。 */
+        sprintf(text,"SET,POSITION_DEG,%.3f\r",goal*360.0f/(MOTOR_ABZ_COUNTS_PER_REV*MOTOR_SPEED_REDUCTION_RATIO));
+        CHECK(command(text)==0);
+        late_peak=0;
+        for(i=0;i<400000;++i) {
+            frame(true);
+            if(i>=380000 && fabsf(pmsm_position_monitor.error_count)>late_peak)late_peak=fabsf(pmsm_position_monitor.error_count);
+        }
+        printf("Position reverse: target=%d feedback=%d error=%.2f counts\n",goal,pmsm_position_monitor.position_count,pmsm_position_monitor.error_count);
+        CHECK(fabsf(pmsm_position_monitor.error_count)<5 && !pmsm_current_monitor.faults);
+        CHECK(late_peak<5);
+        CHECK(command("STOP\r")==0 && !enabled && !pmsm_position_monitor.running && !pmsm_position_monitor.target_pending);
+        plant_position+=8000;for(i=0;i<100;++i)frame(true);encoder_read_position(&hold);
+        CHECK(command("ENABLE,1\r")==0);
+        CHECK(fabsf(pmsm_position_monitor.target_count-hold)<1);
+        for(i=0;i<40000;++i)frame(true);
+        CHECK(fabsf(pmsm_position_monitor.error_count)<5);
+        CHECK(command("SET,SPEED_RPM,0\r")==0 && !pmsm_position_monitor.position_mode);
+        CHECK(command("SET,POSITION_DEG,0\r")==0 && pmsm_position_monitor.position_mode);
+        CHECK(command("SET,CURRENT_MA,0\r")==0 && !pmsm_position_monitor.position_mode && !pmsm_speed_monitor.speed_mode);
+        CHECK(command("SET,POSITION_DEG,0\r")==0 && pmsm_position_monitor.position_mode);
+        CHECK(command("SET,POSITION_DEG,90\r")==0 && pmsm_position_monitor.target_count==7750);
+        CHECK(command("SET,POSITION_DEG,360\r")==0 && pmsm_position_monitor.target_count==31000);
+        CHECK(command("SET,POSITION_DEG,-360\r")==0 && pmsm_position_monitor.target_count==-31000);
+        sprintf(text,"SET,POSITION_DEG,%.6f\r",MOTOR_POSITION_MAX_COMMAND_COUNTS*360.0f/(MOTOR_ABZ_COUNTS_PER_REV*MOTOR_SPEED_REDUCTION_RATIO));
+        CHECK(command(text)==0);
+        CHECK(pmsm_position_monitor.target_count==MOTOR_POSITION_MAX_COMMAND_COUNTS);
+        sprintf(text,"SET,POSITION_DEG,%.6f\r",-MOTOR_POSITION_MAX_COMMAND_COUNTS*360.0f/(MOTOR_ABZ_COUNTS_PER_REV*MOTOR_SPEED_REDUCTION_RATIO));
+        CHECK(command(text)==0);
+        CHECK(pmsm_position_monitor.target_count==-MOTOR_POSITION_MAX_COMMAND_COUNTS);
+        CHECK(pmsm_current_ctrl_set_position_counts(MOTOR_POSITION_MAX_COMMAND_COUNTS+1)==-1);
+        CHECK(command("STOP\r")==0);
+    }
     CHECK(command("ENABLE,1\r")==0);frame(true);
     cycles+=101;CHECK(watchdog);watchdog();
-    CHECK(!enabled && !pmsm_speed_monitor.running && pmsm_speed_monitor.iq_ref_ma==0 && pmsm_speed_monitor.target_output_rpm==0);
+    CHECK(!enabled && !pmsm_speed_monitor.running && pmsm_speed_monitor.iq_ref_ma==0 && pmsm_speed_monitor.target_counts_s==0);
     CHECK(pmsm_current_monitor.faults&PMSM_CURRENT_TIMING_FAULT);
     CHECK(command("SET,SPEED_RPM,10\r")==-4);
-    cycles+=10000;motor_vofa_poll();motor_vofa_poll();
-    CHECK(tx_size && tx_size%44==0);
-    for(i=0;i<tx_size;i+=44)CHECK(tx[i+40]==0 && tx[i+41]==0 && tx[i+42]==0x80 && tx[i+43]==0x7f);
+    CHECK(!pmsm_position_monitor.running && pmsm_position_monitor.speed_ref_counts_s==0 && !pmsm_position_monitor.target_pending);
+    CHECK(command("SET,POSITION_DEG,0\r")==-4);
+    {
+        encoder_data_t report;
+        float uploaded[12];
+        memset(&report,0,sizeof(report));
+        report.speed_counts_per_s=5166.666667f;
+        pmsm_position_ctrl_observe(31000); /* 用已知累计计数验证上传输出轴角度。 */
+        CHECK(motor_vofa_set_encoder(&report)==0);
+        cycles+=10000;motor_vofa_poll();motor_vofa_poll();
+        CHECK(tx_size>=52);
+        memcpy(uploaded,tx+tx_size-52,48);
+        CHECK(fabsf(uploaded[6]-10)<0.001f && uploaded[8]==0);
+        CHECK(fabsf(uploaded[9]-TEST_SPEED_OUTPUT_RPM)<0.001f);
+        CHECK(fabsf(uploaded[10]-pmsm_position_monitor.target_count*360.0f/(MOTOR_ABZ_COUNTS_PER_REV*MOTOR_SPEED_REDUCTION_RATIO))<0.01f);
+        CHECK(fabsf(uploaded[11]-360)<0.001f);
+    }
+    CHECK(tx_size && tx_size%52==0);
+    for(i=0;i<tx_size;i+=52)CHECK(tx[i+48]==0 && tx[i+49]==0 && tx[i+50]==0x80 && tx[i+51]==0x7f);
     CHECK(pwm_commits>30000);
-    puts("PASS preparation/current/speed: startup alignment/READY, signed Iq, 1kHz cascaded speed tracking/load/reverse, mode switches, STOP/faults, 10-channel JustFloat");
+    puts("PASS preparation/current/speed/position: startup, signed Iq, 1kHz cascade, position multi-turn/reverse/hold, mode switches, STOP/faults, 12-channel JustFloat");
     return 0;
 }

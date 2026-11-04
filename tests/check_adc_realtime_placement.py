@@ -29,12 +29,15 @@ current_chain = ["current_sample", "current_trip", "current_watchdog", "current_
                  "pmsm_current_ctrl_start", "pmsm_current_ctrl_stop", "pmsm_current_ctrl_set_target",
                  "pmsm_current_ctrl_clear_fault", "pmsm_current_ctrl_poll", "pmsm_current_ctrl_get_status",
                  "pmsm_current_ctrl_align", "pmsm_current_ctrl_finish_alignment",
-                 "pmsm_current_ctrl_set_speed", "pmsm_speed_ctrl_observe", "pmsm_speed_ctrl_reset_feedback",
+                 "pmsm_current_ctrl_set_speed_counts_s", "pmsm_speed_ctrl_observe", "pmsm_speed_ctrl_reset_feedback",
                  "pmsm_speed_ctrl_step", "pmsm_speed_ctrl_set_target", "pmsm_speed_ctrl_select_current",
                  "pmsm_speed_ctrl_start", "pmsm_speed_ctrl_stop", "pmsm_speed_ctrl_get_status",
+                 "pmsm_current_ctrl_set_position_counts", "pmsm_position_ctrl_observe", "pmsm_position_ctrl_reset_feedback",
+                 "pmsm_position_ctrl_set_target", "pmsm_position_ctrl_step", "pmsm_position_ctrl_start",
+                 "pmsm_position_ctrl_stop", "pmsm_position_ctrl_select_direct", "pmsm_position_ctrl_get_status",
                  "pmsm_clarke", "pmsm_park", "pmsm_inv_park", "pmsm_sincos", "pmsm_svpwm",
                  "pmsm_pi_step", "pmsm_pi_reset", "pmsm_protect_check", "pmsm_protect_can_enable",
-                 "pmsm_protect_clear", "evaluate", "encoder_read_phase", "encoder_reset", "encoder_get_generation"]
+                 "pmsm_protect_clear", "evaluate", "encoder_read_phase", "encoder_read_position", "encoder_reset", "encoder_get_generation"]
 placed += current_chain
 assert "foc_sine_quarter" in dump("-t"), "Missing FOC sine table"
 table = next(line for line in dump("-t").splitlines() if line.split() and line.split()[-1] == "foc_sine_quarter")
@@ -64,9 +67,11 @@ for name in checked:
             filename = "pid.c.o"
         elif name.startswith("pmsm_speed_ctrl_"):
             filename = "pmsm_speed_ctrl.c.o"
+        elif name.startswith("pmsm_position_ctrl_"):
+            filename = "pmsm_position_ctrl.c.o"
         elif name.startswith("pmsm_"):
             filename = "pmsm_foc.c.o"
-        elif name in {"encoder_read_phase", "encoder_reset", "encoder_get_generation"}:
+        elif name in {"encoder_read_phase", "encoder_read_position", "encoder_reset", "encoder_get_generation"}:
             filename = "encoder.c.o"
         elif name.startswith("pwm_"):
             filename = "pwm.c.o"
