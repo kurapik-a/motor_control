@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 #include "motor_vofa.h"
 #include "pmsm_current_ctrl.h"
+#include "pmsm_speed_ctrl.h"
 #include "pmsm_init.h"
 #include "board.h"
 #include "hpm_clock_drv.h"
@@ -69,11 +70,14 @@ static int motor_vofa_command(void *user, const vofa_command_t *command)
     case VOFA_CMD_CURRENT_MA:
         result = pmsm_current_ctrl_set_target(command->value);
         break;
+    case VOFA_CMD_SPEED_RPM:
+        result = pmsm_current_ctrl_set_speed(command->value);
+        break;
     case VOFA_CMD_CLEAR_FAULT:
         result = pmsm_current_ctrl_clear_fault();
         break;
     default:
-        break; /* 速度、位置和在线PID命令尚未接入。 */
+        break; /* 位置和在线PID命令尚未接入。 */
     }
     motor_vofa_command_result = result;
     return result;
@@ -122,7 +126,9 @@ int motor_vofa_init(void)
     config.channels = MOTOR_VOFA_CHANNEL_COUNT;
     config.current_ma.min = -MOTOR_CURRENT_CTRL_MAX_COMMAND_MA;
     config.current_ma.max = MOTOR_CURRENT_CTRL_MAX_COMMAND_MA;
-    /* ENABLE启动电流对齐/闭环。 */
+    config.speed_rpm.min = -MOTOR_SPEED_CTRL_MAX_OUTPUT_RPM;
+    config.speed_rpm.max = MOTOR_SPEED_CTRL_MAX_OUTPUT_RPM;
+    /* ENABLE仅在上电准备完成后启动闭环。 */
     config.on_command = motor_vofa_command;
     motor_vofa_io_result = vofa_debug_init(&motor_vofa_context, &config);
     if (motor_vofa_io_result != VOFA_OK) {
@@ -162,11 +168,14 @@ void motor_vofa_poll(void)
         return;
     }
     pmsm_current_status_t current;
+    pmsm_speed_status_t speed;
     pmsm_current_ctrl_get_status(&current);
+    pmsm_speed_ctrl_get_status(&speed);
     values[0] = current.id_ref_ma; values[1] = current.id_ma;
     values[2] = current.iq_ref_ma; values[3] = current.iq_ma;
     values[4] = current.ud; values[5] = current.uq;
     values[6] = output.speed_rpm; values[7] = (float)(current.faults | current.inhibit_faults);
+    values[8] = speed.target_output_rpm; values[9] = speed.feedback_output_rpm;
     motor_vofa_publish_result = vofa_debug_publish(
         &motor_vofa_context, values, MOTOR_VOFA_CHANNEL_COUNT);
 }

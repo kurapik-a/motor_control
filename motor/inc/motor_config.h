@@ -6,7 +6,7 @@
  * PI 初值直接填写 VOFA 整定得到的 Kp、Ki 数值，无需再乘 ADC 比例或控制周期。
  * 每次控制计算：积分 += Ki * 误差，输出 = Kp * 误差 + 积分（随后限幅）。
  * 电流环误差单位 mA、输出单位 PWM 计数；Ki为20kHz每拍积分增益。
- * 当前仅接入电流闭环，不保留未生效的速度/位置环和开环测试参数。 */
+ * 速度环误差为电机轴编码器计数/秒，输出为mA，Ki为1kHz每拍增益。 */
 
 /* ===== 1. 电流环PI及各轴输出限幅 ===== */
 #ifndef MOTOR_CURRENT_D_KP
@@ -42,6 +42,16 @@
 #define MOTOR_SPEED_ESTIMATE_HZ 1000u /* 主循环标称测速频率，Hz；速度按实际经过时间计算。 */
 #define MOTOR_CURRENT_FILTER_ALPHA 0.2f /* 电流一阶低通系数，范围(0,1]，1=不滤波。 */
 #define MOTOR_SPEED_FILTER_ALPHA 0.1f /* 标称测速周期的低通系数，范围(0,1]。 */
+
+/* ===== 速度环：原工程PI，命令单位为减速器输出轴rpm ===== */
+#define MOTOR_SPEED_LOOP_HZ 1000u
+#define MOTOR_SPEED_KP 0.8058608f
+#define MOTOR_SPEED_KI 0.008058608f
+#define MOTOR_SPEED_CTRL_MAX_OUTPUT_RPM 100.0f /* 命令范围，低于实际超速保护；不改变保护门限。 */
+#define MOTOR_SPEED_CTRL_IQ_LIMIT_MA 1000.0f /* 速度PI自身的正负输出上限。 */
+#if MOTOR_SPEED_LOOP_HZ == 0 || MOTOR_PWM_FREQUENCY_HZ % MOTOR_SPEED_LOOP_HZ != 0
+#error "Current-loop frequency must be divisible by speed-loop frequency"
+#endif
 
 /* ===== 4. 对齐专用：进入RUNNING后不再执行 ===== */
 #define MOTOR_ALIGN_START_ELECTRICAL_DEG 90.0f /* 对齐初始电角度，单位电角度。 */
@@ -130,7 +140,7 @@
 #error "Invalid alignment current qualification window"
 #endif
 
-/* ===== 7. VOFA参数：固定8通道，改波特率后上位机也需同步 ===== */
+/* ===== 7. VOFA参数：固定10通道，改波特率后上位机也需同步 ===== */
 #ifndef MOTOR_VOFA_BAUDRATE
 #define MOTOR_VOFA_BAUDRATE 115200u /* VOFA 串口波特率，单位 bit/s；上位机必须选择相同数值。 */
 #endif

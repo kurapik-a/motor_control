@@ -51,6 +51,8 @@ int pmsm_current_ctrl_align(void) MOTOR_RAMFUNC;
 int pmsm_current_ctrl_finish_alignment(void) MOTOR_RAMFUNC;
 void pmsm_current_ctrl_stop(void) MOTOR_RAMFUNC;
 int pmsm_current_ctrl_set_target(float iq_ma) MOTOR_RAMFUNC;
+/* 输出轴rpm；选择速度模式，速度PI在ADC调度中生成Iq。 */
+int pmsm_current_ctrl_set_speed(float output_rpm) MOTOR_RAMFUNC;
 int pmsm_current_ctrl_clear_fault(void) MOTOR_RAMFUNC;
 void pmsm_current_ctrl_poll(void) MOTOR_RAMFUNC;
 void pmsm_current_ctrl_get_status(pmsm_current_status_t *status) MOTOR_RAMFUNC;

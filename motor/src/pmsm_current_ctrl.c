@@ -3,6 +3,7 @@
 #pragma GCC optimize ("O2")
 #endif
 #include "pmsm_current_ctrl.h"
+#include "pmsm_speed_ctrl.h"
 #include "pid.h"
 #include "motor_config.h"
 #include "adc.h"
@@ -36,6 +37,9 @@ static uint32_t align_good_ticks, align_bad_ticks, align_final_good_ticks;
 static float align_id_error_sum, align_iq_abs_sum;
 static uint32_t encoder_generation, release_ticks, release_good_ticks, release_timeout_ticks;
 static bool origin_reset;
+static uint32_t speed_loop_frames;
+static int32_t speed_loop_delta;
+static uint64_t speed_loop_capture;
 
 MOTOR_INLINE bool cc_finite(float x) { return x >= -FLT_MAX && x <= FLT_MAX; }
 MOTOR_INLINE float cc_abs(float x) { return x < 0 ? -x : x; }
@@ -86,6 +90,7 @@ static void current_trip(uint32_t faults)
     pmsm_current_monitor.state = PMSM_CURRENT_FAULT;
     if (faults & PMSM_FAULT_ENCODER) pmsm_current_monitor.aligned = false;
     command_iq = id_ref = iq_ref = 0;
+    pmsm_speed_ctrl_stop();
     pmsm_pi_reset(&id_pi); pmsm_pi_reset(&iq_pi);
 }
 
@@ -124,6 +129,7 @@ static void current_sample(const adc_data_t *sample, int status)
 {
     uint64_t began, elapsed;
     uint32_t phase = 0, faults;
+    bool speed_due = false;
     int encoder_status;
     int32_t delta;
     float angle, scale, previous_d, previous_q, magnitude;
@@ -141,6 +147,8 @@ static void current_sample(const adc_data_t *sample, int status)
         pmsm_current_monitor.aligned = false;
         speed_reference = speed_valid = false;
         encoder_generation = encoder_get_generation();
+        speed_loop_frames = 0;
+        pmsm_speed_ctrl_reset_feedback();
         if (controlling || (pmsm_current_monitor.state == PMSM_CURRENT_ALIGN_COMPLETE && origin_reset)) {
             current_trip(PMSM_FAULT_ENCODER); return;
         }
@@ -155,9 +163,19 @@ static void current_sample(const adc_data_t *sample, int status)
         scale = (float)(delta * MOTOR_ENCODER_DIRECTION) * cycles_per_second / (float)(uint32_t)elapsed;
         pmsm_current_monitor.speed_counts_s += MOTOR_SPEED_FILTER_ALPHA * (scale - pmsm_current_monitor.speed_counts_s);
         speed_valid = true;
+        /* 聚合20个50us位移得到1ms测速，避免把单拍整数脉冲差当作速度环反馈。 */
+        if (!speed_loop_frames) { speed_loop_capture = speed_capture; speed_loop_delta = 0; }
+        speed_loop_delta += delta * MOTOR_ENCODER_DIRECTION;
+        if (++speed_loop_frames == MOTOR_PWM_FREQUENCY_HZ / MOTOR_SPEED_LOOP_HZ) {
+            scale = (float)speed_loop_delta * cycles_per_second / (float)(uint32_t)(sample->capture_cycles-speed_loop_capture);
+            pmsm_speed_ctrl_observe(scale);
+            speed_loop_frames = 0; speed_due = true;
+        }
     } else {
         speed_valid = false;
         pmsm_current_monitor.speed_counts_s = 0;
+        speed_loop_frames = 0;
+        pmsm_speed_ctrl_reset_feedback();
     }
     speed_reference = encoder_status == 0;
     speed_capture = sample->capture_cycles; speed_phase = phase;
@@ -184,7 +202,7 @@ static void current_sample(const adc_data_t *sample, int status)
         angle = 0;
     } else {
         id_ref = approach(id_ref, 0.0f, slew);
-        iq_ref = approach(iq_ref, command_iq, slew);
+        if (!pmsm_speed_monitor.speed_mode) iq_ref = approach(iq_ref, command_iq, slew);
     }
     filtered_u += MOTOR_CURRENT_FILTER_ALPHA * (sample->current_u_ma-filtered_u);
     filtered_v += MOTOR_CURRENT_FILTER_ALPHA * (sample->current_v_ma-filtered_v);
@@ -213,6 +231,10 @@ static void current_sample(const adc_data_t *sample, int status)
         if (release_ticks >= release_timeout_ticks) {
             current_trip(PMSM_CURRENT_ALIGN_FAULT | PMSM_CURRENT_ALIGN_CURRENT_FAULT); return;
         }
+    }
+    if (pmsm_current_monitor.state == PMSM_CURRENT_RUNNING && pmsm_speed_monitor.speed_mode) {
+        if (speed_due && pmsm_speed_ctrl_step()) { current_trip(PMSM_FAULT_NUMERIC); return; }
+        iq_ref = pmsm_speed_monitor.iq_ref_ma; /* 速度PI自身已限流；不再叠加手动电流给定的缓升。 */
     }
     previous_d = id_pi.mem; previous_q = iq_pi.mem;
     if (pmsm_pi_step(&id_pi, id_ref, dq.d) || pmsm_pi_step(&iq_pi, iq_ref, dq.q)) {
@@ -354,6 +376,7 @@ int pmsm_current_ctrl_init(void)
     memset((void *)&pmsm_current_monitor, 0, sizeof(pmsm_current_monitor));
     memset(&input, 0, sizeof(input));
     pmsm_protect_init(&protection);
+    if (pmsm_speed_ctrl_init()) return -1;
     reload = pwm_get_reload();
     id_pi.kp = MOTOR_CURRENT_D_KP; id_pi.ki = MOTOR_CURRENT_D_KI; id_pi.limit = MOTOR_CURRENT_D_VOLTAGE_LIMIT_TICKS;
     iq_pi.kp = MOTOR_CURRENT_Q_KP; iq_pi.ki = MOTOR_CURRENT_Q_KI; iq_pi.limit = MOTOR_CURRENT_Q_VOLTAGE_LIMIT_TICKS;
@@ -391,6 +414,7 @@ int pmsm_current_ctrl_init(void)
         !required_final_good_ticks || timeout_ticks > UINT32_MAX/100u ||
         !release_timeout_ticks || (float)MOTOR_CURRENT_ALIGN_RELEASE_TIMEOUT_MS <= MOTOR_CURRENT_ALIGN_CURRENT_MA * 1000.0f / MOTOR_CURRENT_CTRL_SLEW_MA_S + MOTOR_CURRENT_ALIGN_FINAL_GOOD_MS) return -1;
     speed_reference = speed_valid = false;
+    speed_loop_frames = 0;
     encoder_generation = encoder_get_generation();
     origin_reset = false;
     command_iq = MOTOR_CURRENT_CTRL_DEFAULT_IQ_MA;
@@ -424,6 +448,8 @@ static int current_begin(bool alignment)
     }
     pmsm_pi_reset(&id_pi); pmsm_pi_reset(&iq_pi);
     filtered_u = sample.current_u_ma; filtered_v = sample.current_v_ma;
+    if (alignment) pmsm_speed_ctrl_stop();
+    else pmsm_speed_ctrl_start();
     id_ref = iq_ref = 0;
     if (alignment) { pmsm_current_monitor.aligned = false; command_iq = 0; }
     origin_reset = false;
@@ -475,6 +501,8 @@ int pmsm_current_ctrl_finish_alignment(void)
         if (encoder_reset() != 0) { current_trip(PMSM_FAULT_ENCODER); restore_global_irq(irq); return -4; }
         encoder_generation = encoder_get_generation();
         speed_reference = speed_valid = false;
+        speed_loop_frames = 0;
+        pmsm_speed_ctrl_reset_feedback();
         speed_phase = 0; speed_capture = 0;
         pmsm_current_monitor.speed_counts_s = 0;
         filtered_u = filtered_v = id_ref = iq_ref = command_iq = 0;
@@ -513,6 +541,7 @@ void pmsm_current_ctrl_stop(void)
     pwm_disable(); pwm_set_current_loop_callback(0);
     if (pmsm_current_monitor.state != PMSM_CURRENT_FAULT) pmsm_current_monitor.state = PMSM_CURRENT_STOPPED;
     command_iq = id_ref = iq_ref = 0;
+    pmsm_speed_ctrl_stop();
     pmsm_current_monitor.id_ref_ma = pmsm_current_monitor.iq_ref_ma = 0;
     pmsm_pi_reset(&id_pi); pmsm_pi_reset(&iq_pi);
     restore_global_irq(irq);
@@ -524,9 +553,25 @@ int pmsm_current_ctrl_set_target(float iq_ma)
     uint32_t irq = disable_global_irq(CSR_MSTATUS_MIE_MASK);
     if (pmsm_current_monitor.state == PMSM_CURRENT_FAULT) { restore_global_irq(irq); return -4; }
     if (!pmsm_current_monitor.aligned) { restore_global_irq(irq); return -3; }
+    pmsm_speed_ctrl_select_current();
     command_iq = iq_ma;
     restore_global_irq(irq);
     return 0;
+}
+
+int pmsm_current_ctrl_set_speed(float output_rpm)
+{
+    int result;
+    uint32_t irq;
+    if (!initialized || !cc_finite(output_rpm) || cc_abs(output_rpm) > MOTOR_SPEED_CTRL_MAX_OUTPUT_RPM) return -1;
+    irq = disable_global_irq(CSR_MSTATUS_MIE_MASK);
+    if (pmsm_current_monitor.state == PMSM_CURRENT_FAULT) { restore_global_irq(irq); return -4; }
+    if (!pmsm_current_monitor.aligned) { restore_global_irq(irq); return -3; }
+    if (pmsm_current_monitor.state == PMSM_CURRENT_RUNNING && !pmsm_speed_monitor.running) pmsm_speed_ctrl_start();
+    result = pmsm_speed_ctrl_set_target(output_rpm, iq_ref);
+    if (!result) command_iq = 0;
+    restore_global_irq(irq);
+    return result;
 }
 
 int pmsm_current_ctrl_clear_fault(void)
