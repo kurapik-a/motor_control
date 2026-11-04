@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 #include "motor_vofa.h"
 #include "pmsm_current_ctrl.h"
+#include "pmsm_init.h"
 #include "board.h"
 #include "hpm_clock_drv.h"
 #include "hpm_csr_drv.h"
@@ -55,11 +56,11 @@ static int motor_vofa_command(void *user, const vofa_command_t *command)
         }
         if (command->value != 0.0f) break;
         /* ENABLE,0与STOP都立即停机并清零目标。 */
-        pmsm_current_ctrl_stop();
+        pmsm_init_cancel();
         result = VOFA_OK;
         break;
     case VOFA_CMD_STOP:
-        pmsm_current_ctrl_stop();
+        pmsm_init_cancel();
         result = VOFA_OK;
         break;
     case VOFA_CMD_PING:

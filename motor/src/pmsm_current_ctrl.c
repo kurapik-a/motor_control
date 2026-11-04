@@ -23,7 +23,7 @@ static pmsm_protect_input_t input;
 static bool initialized;
 static volatile float command_iq;
 static float filtered_u, filtered_v, id_ref, iq_ref;
-static float cycles_per_second, period_s, slew, offset;
+static float cycles_per_second, period_s, slew;
 static float us_per_cycle, ms_per_cycle;
 static uint64_t last_capture, last_control, period_cycles, current_age_cycles, aux_age_cycles;
 static uint64_t budget_cycles, watchdog_cycles;
@@ -34,10 +34,13 @@ static bool speed_reference, speed_valid;
 static uint32_t ramp_ticks, sweep_ticks, required_stable_ticks, timeout_ticks, required_final_good_ticks;
 static uint32_t align_good_ticks, align_bad_ticks, align_final_good_ticks;
 static float align_id_error_sum, align_iq_abs_sum;
+static uint32_t encoder_generation, release_ticks, release_good_ticks, release_timeout_ticks;
+static bool origin_reset;
 
 MOTOR_INLINE bool cc_finite(float x) { return x >= -FLT_MAX && x <= FLT_MAX; }
 MOTOR_INLINE float cc_abs(float x) { return x < 0 ? -x : x; }
-MOTOR_INLINE bool active(void) { return pmsm_current_monitor.state == PMSM_CURRENT_ALIGNING || pmsm_current_monitor.state == PMSM_CURRENT_RUNNING; }
+MOTOR_INLINE bool active(void) { return pmsm_current_monitor.state == PMSM_CURRENT_ALIGNING ||
+    pmsm_current_monitor.state == PMSM_CURRENT_ALIGN_RELEASING || pmsm_current_monitor.state == PMSM_CURRENT_RUNNING; }
 MOTOR_INLINE float approach(float value, float target, float step)
 {
     if (value < target) return value + step < target ? value + step : target;
@@ -65,6 +68,7 @@ static void current_watchdog(void) MOTOR_RAMFUNC;
 static void collect_input(const adc_data_t *sample, int status, int encoder_status, uint64_t now) MOTOR_RAMFUNC;
 static void prepare_feedback(const adc_data_t *sample, float angle) MOTOR_RAMFUNC;
 static uint32_t qualify_alignment(const adc_data_t *sample, uint32_t phase, const pmsm_dq_t *dq) MOTOR_RAMFUNC;
+static int current_begin(bool alignment) MOTOR_RAMFUNC;
 MOTOR_INLINE void reset_alignment_window(uint32_t phase)
 {
     stable_ticks = align_good_ticks = align_bad_ticks = align_final_good_ticks = 0;
@@ -80,6 +84,7 @@ static void current_trip(uint32_t faults)
     if (pmsm_current_monitor.state != PMSM_CURRENT_FAULT) pmsm_current_monitor.first_faults = faults;
     pmsm_current_monitor.faults |= faults;
     pmsm_current_monitor.state = PMSM_CURRENT_FAULT;
+    if (faults & PMSM_FAULT_ENCODER) pmsm_current_monitor.aligned = false;
     command_iq = id_ref = iq_ref = 0;
     pmsm_pi_reset(&id_pi); pmsm_pi_reset(&iq_pi);
 }
@@ -127,10 +132,20 @@ static void current_sample(const adc_data_t *sample, int status)
     pmsm_dq_t dq, udq;
     pmsm_pwm_t wave;
     bool controlling = active();
-    bool aligning = pmsm_current_monitor.state == PMSM_CURRENT_ALIGNING;
+    bool aligning = pmsm_current_monitor.state == PMSM_CURRENT_ALIGNING ||
+        pmsm_current_monitor.state == PMSM_CURRENT_ALIGN_RELEASING;
     began = hpm_csr_get_core_cycle();
     if (status != 0) { if (controlling) current_trip(PMSM_CURRENT_ADC_FAULT); return; }
     encoder_status = encoder_read_phase(&phase);
+    if (encoder_generation != encoder_get_generation()) {
+        pmsm_current_monitor.aligned = false;
+        speed_reference = speed_valid = false;
+        encoder_generation = encoder_get_generation();
+        if (controlling || (pmsm_current_monitor.state == PMSM_CURRENT_ALIGN_COMPLETE && origin_reset)) {
+            current_trip(PMSM_FAULT_ENCODER); return;
+        }
+    }
+    if (encoder_status) pmsm_current_monitor.aligned = false;
     /* 停机/故障后仍更新实际速度，避免旧超速值使故障永久无法清除。 */
     elapsed = sample->capture_cycles - speed_capture;
     if (!encoder_status && speed_reference && elapsed > 0 && elapsed <= period_cycles * 4u) {
@@ -154,15 +169,19 @@ static void current_sample(const adc_data_t *sample, int status)
     }
     last_capture = sample->capture_cycles; last_count = sample->sample_count;
     collect_input(sample, status, encoder_status, began);
-    angle = phase_angle(phase) - offset;
-    if (angle < 0) angle += 360.0f;
-    if (angle >= 360.0f) angle -= 360.0f;
+    angle = phase_angle(phase); /* 对齐后硬件计数清零，不再减软件偏移。 */
     if (pmsm_current_monitor.state == PMSM_CURRENT_ALIGNING) {
         ++align_ticks;
         id_ref = MOTOR_CURRENT_ALIGN_CURRENT_MA * (align_ticks < ramp_ticks ? (float)align_ticks/ramp_ticks : 1.0f);
         angle = align_ticks <= ramp_ticks ? MOTOR_ALIGN_START_ELECTRICAL_DEG :
             (align_ticks < ramp_ticks+sweep_ticks ? MOTOR_ALIGN_START_ELECTRICAL_DEG * (1.0f-(float)(align_ticks-ramp_ticks)/sweep_ticks) : 0.0f);
         iq_ref = 0;
+    } else if (pmsm_current_monitor.state == PMSM_CURRENT_ALIGN_RELEASING) {
+        ++release_ticks;
+        pmsm_current_monitor.alignment_release_ticks = release_ticks;
+        id_ref = approach(id_ref, 0.0f, slew);
+        iq_ref = 0;
+        angle = 0;
     } else {
         id_ref = approach(id_ref, 0.0f, slew);
         iq_ref = approach(iq_ref, command_iq, slew);
@@ -178,6 +197,22 @@ static void current_sample(const adc_data_t *sample, int status)
     if (pmsm_current_monitor.state == PMSM_CURRENT_ALIGNING) {
         faults = qualify_alignment(sample, phase, &dq);
         if (faults) { current_trip(faults); return; }
+    }
+    if (pmsm_current_monitor.state == PMSM_CURRENT_ALIGN_RELEASING) {
+        if (id_ref == 0 && cc_abs(dq.d) <= MOTOR_CURRENT_ALIGN_ERROR_MA && cc_abs(dq.q) <= MOTOR_CURRENT_ALIGN_ERROR_MA)
+            ++release_good_ticks;
+        else release_good_ticks = 0;
+        if (release_good_ticks >= required_final_good_ticks) {
+            pwm_disable(); pwm_set_current_loop_callback(0);
+            command_iq = id_ref = iq_ref = 0;
+            pmsm_current_monitor.id_ref_ma = pmsm_current_monitor.iq_ref_ma = 0;
+            pmsm_pi_reset(&id_pi); pmsm_pi_reset(&iq_pi);
+            pmsm_current_monitor.state = PMSM_CURRENT_ALIGN_COMPLETE;
+            return; /* 已关桥，不再提交本拍PWM。 */
+        }
+        if (release_ticks >= release_timeout_ticks) {
+            current_trip(PMSM_CURRENT_ALIGN_FAULT | PMSM_CURRENT_ALIGN_CURRENT_FAULT); return;
+        }
     }
     previous_d = id_pi.mem; previous_q = iq_pi.mem;
     if (pmsm_pi_step(&id_pi, id_ref, dq.d) || pmsm_pi_step(&iq_pi, iq_ref, dq.q)) {
@@ -291,9 +326,8 @@ static uint32_t qualify_alignment(const adc_data_t *sample, uint32_t phase, cons
     pmsm_current_monitor.alignment_stable_ticks = stable_ticks;
     pmsm_current_monitor.alignment_reason = reason ? reason : (qualified ? 0u : PMSM_ALIGN_WAIT_STABLE);
     if (qualified) {
-        offset = phase_angle(phase);
-        pmsm_current_monitor.offset_deg = offset;
-        pmsm_current_monitor.state = PMSM_CURRENT_RUNNING;
+        release_ticks = release_good_ticks = 0;
+        pmsm_current_monitor.state = PMSM_CURRENT_ALIGN_RELEASING;
         return 0;
     }
     if (align_ticks >= timeout_ticks) {
@@ -351,16 +385,20 @@ int pmsm_current_ctrl_init(void)
     required_stable_ticks = (uint64_t)MOTOR_PWM_FREQUENCY_HZ * MOTOR_CURRENT_ALIGN_STABLE_MS / 1000u;
     timeout_ticks = (uint64_t)MOTOR_PWM_FREQUENCY_HZ * MOTOR_CURRENT_ALIGN_TIMEOUT_MS / 1000u;
     required_final_good_ticks = (uint64_t)MOTOR_PWM_FREQUENCY_HZ * MOTOR_CURRENT_ALIGN_FINAL_GOOD_MS / 1000u;
+    release_timeout_ticks = (uint64_t)MOTOR_PWM_FREQUENCY_HZ * MOTOR_CURRENT_ALIGN_RELEASE_TIMEOUT_MS / 1000u;
     if (!period_cycles || !budget_cycles || budget_cycles >= period_cycles || !ramp_ticks || !sweep_ticks || !required_stable_ticks ||
         timeout_ticks <= ramp_ticks+sweep_ticks+required_stable_ticks+required_final_good_ticks ||
-        !required_final_good_ticks || timeout_ticks > UINT32_MAX/100u) return -1;
+        !required_final_good_ticks || timeout_ticks > UINT32_MAX/100u ||
+        !release_timeout_ticks || (float)MOTOR_CURRENT_ALIGN_RELEASE_TIMEOUT_MS <= MOTOR_CURRENT_ALIGN_CURRENT_MA * 1000.0f / MOTOR_CURRENT_CTRL_SLEW_MA_S + MOTOR_CURRENT_ALIGN_FINAL_GOOD_MS) return -1;
     speed_reference = speed_valid = false;
+    encoder_generation = encoder_get_generation();
+    origin_reset = false;
     command_iq = MOTOR_CURRENT_CTRL_DEFAULT_IQ_MA;
     initialized = adc_set_control_callback(current_sample) == 0;
     return initialized ? 0 : -1;
 }
 
-int pmsm_current_ctrl_start(void)
+static int current_begin(bool alignment)
 {
     adc_data_t sample;
     uint32_t phase = 0;
@@ -369,9 +407,13 @@ int pmsm_current_ctrl_start(void)
     if (!initialized) { restore_global_irq(irq); return -1; }
     if (pmsm_current_monitor.state == PMSM_CURRENT_FAULT) { restore_global_irq(irq); return -4; }
     if (active() || pwm_is_enabled()) { restore_global_irq(irq); return -2; }
+    if (!alignment && (!pmsm_current_monitor.aligned || encoder_generation != encoder_get_generation())) {
+        pmsm_current_monitor.aligned = false;
+        restore_global_irq(irq); return -3;
+    }
     status = adc_read(&sample); enc = encoder_read_phase(&phase);
     collect_input(&sample, status, enc, hpm_csr_get_core_cycle());
-    prepare_feedback(&sample, MOTOR_ALIGN_START_ELECTRICAL_DEG);
+    prepare_feedback(&sample, alignment ? MOTOR_ALIGN_START_ELECTRICAL_DEG : phase_angle(phase));
     pmsm_current_monitor.inhibit_faults = pmsm_protect_check(&protection, &input);
     if (!pmsm_protect_can_enable(&protection)) {
         if (protection.latched_faults) {
@@ -381,32 +423,88 @@ int pmsm_current_ctrl_start(void)
         restore_global_irq(irq); return -3;
     }
     pmsm_pi_reset(&id_pi); pmsm_pi_reset(&iq_pi);
-    filtered_u = filtered_v = id_ref = iq_ref = offset = 0;
-    align_ticks = 0;
-    reset_alignment_window(phase);
-    pmsm_current_monitor.alignment_stable_ticks = pmsm_current_monitor.alignment_best_ticks = 0;
-    pmsm_current_monitor.alignment_reason = PMSM_ALIGN_SWEEP;
-    pmsm_current_monitor.alignment_last_reset = 0;
-    pmsm_current_monitor.alignment_current_resets = pmsm_current_monitor.alignment_motion_resets = 0;
-    pmsm_current_monitor.alignment_phase_delta = 0;
-    pmsm_current_monitor.alignment_average_speed_counts_s = 0;
-    pmsm_current_monitor.alignment_window_good_ticks = pmsm_current_monitor.alignment_window_bad_ticks = 0;
-    pmsm_current_monitor.alignment_final_good_ticks = 0;
-    pmsm_current_monitor.alignment_window_good_percent = 0;
-    pmsm_current_monitor.alignment_mean_id_error_ma = pmsm_current_monitor.alignment_mean_abs_iq_ma = 0;
-    pmsm_current_monitor.alignment_last_bad_tick = pmsm_current_monitor.alignment_last_bad_reason = 0;
-    pmsm_current_monitor.alignment_last_bad_id_ma = pmsm_current_monitor.alignment_last_bad_iq_ma = 0;
-    pmsm_current_monitor.alignment_last_bad_raw_u = pmsm_current_monitor.alignment_last_bad_raw_v = 0;
+    filtered_u = sample.current_u_ma; filtered_v = sample.current_v_ma;
+    id_ref = iq_ref = 0;
+    if (alignment) { pmsm_current_monitor.aligned = false; command_iq = 0; }
+    origin_reset = false;
+    if (alignment) {
+        align_ticks = 0;
+        reset_alignment_window(phase);
+        pmsm_current_monitor.alignment_stable_ticks = pmsm_current_monitor.alignment_best_ticks = 0;
+        pmsm_current_monitor.alignment_reason = PMSM_ALIGN_SWEEP;
+        pmsm_current_monitor.alignment_last_reset = 0;
+        pmsm_current_monitor.alignment_current_resets = pmsm_current_monitor.alignment_motion_resets = 0;
+        pmsm_current_monitor.alignment_phase_delta = 0;
+        pmsm_current_monitor.alignment_average_speed_counts_s = 0;
+        pmsm_current_monitor.alignment_window_good_ticks = pmsm_current_monitor.alignment_window_bad_ticks = 0;
+        pmsm_current_monitor.alignment_final_good_ticks = 0;
+        pmsm_current_monitor.alignment_window_good_percent = 0;
+        pmsm_current_monitor.alignment_mean_id_error_ma = pmsm_current_monitor.alignment_mean_abs_iq_ma = 0;
+        pmsm_current_monitor.alignment_last_bad_tick = pmsm_current_monitor.alignment_last_bad_reason = 0;
+        pmsm_current_monitor.alignment_last_bad_id_ma = pmsm_current_monitor.alignment_last_bad_iq_ma = 0;
+        pmsm_current_monitor.alignment_last_bad_raw_u = pmsm_current_monitor.alignment_last_bad_raw_v = 0;
+        pmsm_current_monitor.alignment_release_ticks = 0;
+    }
     last_count = sample.sample_count; last_capture = sample.capture_cycles;
     last_control = hpm_csr_get_core_cycle();
-    pmsm_current_monitor.updates = pmsm_current_monitor.alignment_ticks = pmsm_current_monitor.max_exec_cycles = 0;
+    pmsm_current_monitor.updates = pmsm_current_monitor.max_exec_cycles = 0;
+    if (alignment) pmsm_current_monitor.alignment_ticks = 0;
     if (pwm_set_counts(reload/2u,reload/2u,reload/2u) || pwm_set_current_loop_callback(current_watchdog)) {
         current_trip(PMSM_CURRENT_DRIVER_FAULT); restore_global_irq(irq); return -4;
     }
-    pmsm_current_monitor.state = PMSM_CURRENT_ALIGNING;
+    pmsm_current_monitor.state = alignment ? PMSM_CURRENT_ALIGNING : PMSM_CURRENT_RUNNING;
     if (pwm_enable()) { current_trip(PMSM_CURRENT_DRIVER_FAULT); restore_global_irq(irq); return -4; }
     restore_global_irq(irq);
     return 0;
+}
+
+int pmsm_current_ctrl_start(void) { return current_begin(false); }
+int pmsm_current_ctrl_align(void) { return current_begin(true); }
+
+int pmsm_current_ctrl_finish_alignment(void)
+{
+    int result = -3;
+    adc_data_t sample;
+    uint32_t phase = 0;
+    int status, enc;
+    uint32_t irq = disable_global_irq(CSR_MSTATUS_MIE_MASK);
+    if (pmsm_current_monitor.state != PMSM_CURRENT_ALIGN_COMPLETE || pwm_is_enabled()) {
+        restore_global_irq(irq); return -2;
+    }
+    if (!origin_reset) {
+        if (encoder_reset() != 0) { current_trip(PMSM_FAULT_ENCODER); restore_global_irq(irq); return -4; }
+        encoder_generation = encoder_get_generation();
+        speed_reference = speed_valid = false;
+        speed_phase = 0; speed_capture = 0;
+        pmsm_current_monitor.speed_counts_s = 0;
+        filtered_u = filtered_v = id_ref = iq_ref = command_iq = 0;
+        pmsm_pi_reset(&id_pi); pmsm_pi_reset(&iq_pi);
+        pmsm_current_monitor.offset_deg = pmsm_current_monitor.angle_deg = 0;
+        pmsm_current_monitor.ud = pmsm_current_monitor.uq = 0;
+        pmsm_current_monitor.id_ma = pmsm_current_monitor.iq_ma = 0;
+        pmsm_current_monitor.voltage_limited = pmsm_current_monitor.id_voltage_limited =
+            pmsm_current_monitor.iq_voltage_limited = pmsm_current_monitor.alignment_voltage_limited = false;
+        if (pwm_set_counts(reload/2u, reload/2u, reload/2u)) {
+            current_trip(PMSM_CURRENT_DRIVER_FAULT); restore_global_irq(irq); return -4;
+        }
+        pmsm_current_monitor.pwm_u = pmsm_current_monitor.pwm_v = pmsm_current_monitor.pwm_w = reload/2u;
+        origin_reset = true;
+    } else if (speed_valid && encoder_generation == encoder_get_generation()) {
+        status = adc_read(&sample); enc = encoder_read_phase(&phase);
+        collect_input(&sample, status, enc, hpm_csr_get_core_cycle());
+        prepare_feedback(&sample, phase_angle(phase));
+        pmsm_current_monitor.inhibit_faults = pmsm_protect_check(&protection, &input);
+        if (pmsm_protect_can_enable(&protection)) {
+            command_iq = MOTOR_CURRENT_CTRL_DEFAULT_IQ_MA;
+            pmsm_current_monitor.aligned = true;
+            pmsm_current_monitor.state = PMSM_CURRENT_STOPPED;
+            result = 0;
+        } else if (protection.latched_faults) {
+            current_trip(protection.latched_faults); result = -4;
+        }
+    }
+    restore_global_irq(irq);
+    return result;
 }
 
 void pmsm_current_ctrl_stop(void)
@@ -425,6 +523,7 @@ int pmsm_current_ctrl_set_target(float iq_ma)
     if (!initialized || !cc_finite(iq_ma) || cc_abs(iq_ma) > MOTOR_CURRENT_CTRL_MAX_COMMAND_MA) return -1;
     uint32_t irq = disable_global_irq(CSR_MSTATUS_MIE_MASK);
     if (pmsm_current_monitor.state == PMSM_CURRENT_FAULT) { restore_global_irq(irq); return -4; }
+    if (!pmsm_current_monitor.aligned) { restore_global_irq(irq); return -3; }
     command_iq = iq_ma;
     restore_global_irq(irq);
     return 0;
@@ -439,7 +538,7 @@ int pmsm_current_ctrl_clear_fault(void)
     if (!initialized || active() || pwm_is_enabled()) { restore_global_irq(irq); return -2; }
     status = adc_read(&sample); enc = encoder_read_phase(&phase);
     collect_input(&sample, status, enc, hpm_csr_get_core_cycle());
-    prepare_feedback(&sample, phase_angle(phase)-offset);
+    prepare_feedback(&sample, phase_angle(phase));
     result = pmsm_protect_clear(&protection, &input);
     if (result == 0) {
         pmsm_current_monitor.faults = pmsm_current_monitor.first_faults = 0;

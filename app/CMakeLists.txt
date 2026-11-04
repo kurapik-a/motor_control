@@ -35,12 +35,11 @@ sdk_inc(../motor/inc ../core/inc inc)
 sdk_app_src(src/main.c src/motor_vofa.c src/encoder.c
     src/adc.c
     src/pwm.c ../motor/src/pmsm_foc.c ../motor/src/pid.c
-    ../motor/src/pmsm_protect.c ../motor/src/pmsm_current_ctrl.c)
+    ../motor/src/pmsm_protect.c ../motor/src/pmsm_current_ctrl.c ../motor/src/pmsm_init.c)
 # 上电不自动使能；ENABLE启动电流对齐和闭环。
 
 # 仅延后编译，不删除这些初始化和扩展源码。
 if(MOTOR_CONTROL_BUILD_MOTOR)
-    sdk_app_src(../motor/src/pmsm_init.c)
     sdk_app_src(../core/src/pmsm_currentctrl_3P3Z.c
         ../core/src/motor_params_detection.c ../core/src/pmsm_detection.c
         ../core/src/pmsm_interia.c)

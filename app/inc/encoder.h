@@ -3,6 +3,7 @@
 #define ENCODER_H
 #include <stdint.h>
 #include "motor_config.h"
+#include "motor_rt.h"
 
 /* 编码器数值统一在 motor/inc/motor_config.h 修改。
  * 以下仅兼容模块内部宏名，不再保存独立初值；编译参数仍可覆盖这些兼容名。 */
@@ -70,7 +71,9 @@ int encoder_read(encoder_data_t *data);
 int encoder_to_output_axis(const encoder_data_t *motor, encoder_output_data_t *output);
 /* 将当前位置设为零，同时清除速度和滤波历史；不是寻找物理 Z 零位。
  * 电角度零参考也随清零改变；后续 FOC 对齐应确定它与转子磁极的关系。 */
-int encoder_reset(void);
+int encoder_reset(void) MOTOR_RAMFUNC;
+/* 每次初始化/清零递增，供控制层识别零点失效。 */
+uint32_t encoder_get_generation(void) MOTOR_RAMFUNC;
 /* 实时控制只读当前圈内相位，不触碰前台锁存寄存器或测速历史，可由ADC回调调用。 */
 int encoder_read_phase(uint32_t *phase);
 #endif /* ENCODER_H */

@@ -46,7 +46,8 @@
 /* ===== 4. 对齐专用：进入RUNNING后不再执行 ===== */
 #define MOTOR_ALIGN_START_ELECTRICAL_DEG 90.0f /* 对齐初始电角度，单位电角度。 */
 #define MOTOR_CURRENT_ALIGN_VOLTAGE_LIMIT_TICKS 500.0f /* 对齐期独立总限幅，单位为原SVPWM电压计数。 */
-#define MOTOR_CURRENT_ALIGN_CURRENT_MA 800.0f /* 固定电角度d轴对齐电流，mA。 */
+#define MOTOR_CURRENT_ALIGN_CURRENT_MA 1000.0f /* 上电对齐d轴电流，mA。 */
+#define MOTOR_CURRENT_ALIGN_RELEASE_TIMEOUT_MS 2000u /* 合格后降流并等待实际电流回零的最长时间。 */
 #define MOTOR_CURRENT_ALIGN_RAMP_MS 500u
 #define MOTOR_CURRENT_ALIGN_SWEEP_MS 500u /* 对齐角由90度缓移到0度。 */
 #define MOTOR_CURRENT_ALIGN_STABLE_MS 200u /* 电流合格比例与位置静止判定的窗口时长。 */

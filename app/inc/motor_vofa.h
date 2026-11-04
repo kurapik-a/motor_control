@@ -10,7 +10,8 @@
 
 /* board_init() 后调用一次；0=成功，负数=初始化失败。 */
 int motor_vofa_init(void);
-/* 主循环持续调用，ENABLE,1启动电流对齐/闭环，ENABLE,0/STOP停机。
+/* 主循环持续调用，准备完成后ENABLE,1直接启动电流闭环，ENABLE,0/STOP停机。
+ * 未准备完成的ENABLE被拒绝，不排队；STOP还会取消未完成的上电准备。
  * 闭环支持SET,CURRENT_MA及CLEAR_FAULT，上传通道见上方定义。
  * 命令以CR/LF结束；启动执行ADC/过流门禁，失败不排队，不在中断内调用。 */
 void motor_vofa_poll(void);

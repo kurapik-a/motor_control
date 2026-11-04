@@ -1,4 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
+#if defined(__GNUC__)
+#pragma GCC optimize ("O2")
+#endif
 #include "encoder.h"
 #include "board.h"
 #include "hpm_clock_drv.h"
@@ -11,12 +14,16 @@
 int encoder_read_phase(uint32_t *phase) MOTOR_RAMFUNC;
 #if defined(__GNUC__)
 static inline __attribute__((always_inline)) uint32_t qeiv2_get_current_count(QEIV2_Type *qeiv2_x, qeiv2_counter_type_t type);
+static inline __attribute__((always_inline)) void qeiv2_reset_counter(QEIV2_Type *qeiv2_x);
+static inline __attribute__((always_inline)) void qeiv2_release_counter(QEIV2_Type *qeiv2_x);
+static inline __attribute__((always_inline)) void qeiv2_clear_status(QEIV2_Type *qeiv2_x, uint32_t mask);
 #endif
 
 #define ENCODER_QEI_BASE BOARD_PMSM0_QEI_BASE
 #define ENCODER_QEI_CLOCK BOARD_BLDC_QEI_CLOCK_SOURCE
 extern uint32_t hpm_core_clock;
 static bool initialized;
+static uint32_t generation;
 static bool speed_has_reference;
 static uint32_t cycle_clock_hz;
 static uint64_t speed_period_cycles, last_speed_cycles;
@@ -24,7 +31,7 @@ static int32_t last_speed_position;
 static float speed_counts_per_s, speed_filtered_counts_per_s;
 static float speed_filter_tau_s;
 
-static void reset_speed_history(void)
+MOTOR_INLINE void reset_speed_history(void)
 {
     speed_has_reference = false;
     last_speed_cycles = 0;
@@ -67,6 +74,7 @@ int encoder_init(void)
     qeiv2_clear_status(ENCODER_QEI_BASE, UINT32_MAX);
     qeiv2_release_counter(ENCODER_QEI_BASE);
     initialized = true;
+    ++generation;
     return 0;
 }
 
@@ -80,8 +88,11 @@ int encoder_reset(void)
     qeiv2_clear_status(ENCODER_QEI_BASE, UINT32_MAX);
     qeiv2_release_counter(ENCODER_QEI_BASE);
     reset_speed_history();
+    ++generation;
     return 0;
 }
+
+uint32_t encoder_get_generation(void) { return generation; }
 
 static float electrical_angle_from_phase(uint32_t phase)
 {
