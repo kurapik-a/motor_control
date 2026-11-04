@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 #ifndef MOTOR_PID_H
 #define MOTOR_PID_H
+#include <stdbool.h>
 #include "pmsm_math.h"
 #include "motor_rt.h"
 
@@ -10,6 +11,7 @@
 typedef struct {
     HPM_MOTOR_MATH_TYPE kp, ki, limit; /* 比例、每拍积分增益、输出绝对值上限。 */
     HPM_MOTOR_MATH_TYPE mem, out;     /* 积分状态、最近输出；首次使用初始化为0。 */
+    bool limited;                   /* 最近一次成功计算是否被本轴输出限幅。 */
 } pmsm_pi_t;
 
 /* 清零积分和输出，保留增益与限幅；空指针不操作。 */

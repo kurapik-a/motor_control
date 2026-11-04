@@ -33,7 +33,8 @@ typedef struct {
     float id_ref_ma, iq_ref_ma, id_ma, iq_ma;
     float ud, uq, angle_deg, offset_deg, speed_counts_s;
     uint32_t pwm_u, pwm_v, pwm_w;
-    bool voltage_limited;
+    bool id_voltage_limited, iq_voltage_limited, alignment_voltage_limited;
+    bool voltage_limited; /* 上述三项取或；不包含SVPWM过调制压缩。 */
 } pmsm_current_status_t;
 extern volatile pmsm_current_status_t pmsm_current_monitor;
 

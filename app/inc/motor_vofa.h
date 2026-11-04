@@ -3,20 +3,14 @@
 #define MOTOR_VOFA_H
 #include "encoder.h"
 
-/* 开环JustFloat三通道，全部为减速器输出轴数据：
- * CH0=累计角度（度）；CH1=原始转速（rpm）；CH2=滤波转速（rpm）。 */
-#if MOTOR_CONTROL_USE_CURRENT_LOOP
 /* 闭环CH0~7：Id目标/实际、Iq目标/实际(mA)、Ud/Uq(计数)、输出轴rpm、故障位。 */
 #define MOTOR_VOFA_CHANNEL_COUNT 8u
-#else
-#define MOTOR_VOFA_CHANNEL_COUNT 3u
-#endif
 /* 上传频率，100 Hz 对应每 10 ms 一帧，与约 1 ms 的测速更新相互独立。 */
-#define MOTOR_VOFA_SAMPLE_HZ 100u
+#define MOTOR_VOFA_SAMPLE_HZ MOTOR_VOFA_UPLOAD_HZ
 
 /* board_init() 后调用一次；0=成功，负数=初始化失败。 */
 int motor_vofa_init(void);
-/* 主循环持续调用，ENABLE,1按配置启动电流对齐/闭环或开环，ENABLE,0/STOP停机。
+/* 主循环持续调用，ENABLE,1启动电流对齐/闭环，ENABLE,0/STOP停机。
  * 闭环支持SET,CURRENT_MA及CLEAR_FAULT，上传通道见上方定义。
  * 命令以CR/LF结束；启动执行ADC/过流门禁，失败不排队，不在中断内调用。 */
 void motor_vofa_poll(void);
@@ -24,7 +18,7 @@ void motor_vofa_poll(void);
  * 不保留 data 指针；NULL 或非有限浮点值返回负数，上一组有效数据保持不变。
  * 主循环上传时调用 encoder_to_output_axis()，使用 motor_config.h 中的
  * MOTOR_SPEED_REDUCTION_RATIO（当前 7.75），对角度和两种转速统一换算。
- * 初始未更新时为零；CH0 累计角度可为负值、可超过 360 度，不上传计数或电角度。 */
+ * 初始未更新时为零；当前仅上传输出轴转速到CH6。 */
 int motor_vofa_set_encoder(const encoder_data_t *data);
 extern volatile int motor_vofa_io_result;
 extern volatile int motor_vofa_publish_result;

@@ -22,9 +22,6 @@
 #define ENCODER_SPEED_FILTER_ALPHA MOTOR_SPEED_FILTER_ALPHA
 #endif
 
-#if MOTOR_ENCODER_USE_SPI != 0
-#error "Current encoder implementation only supports QEI A/B"
-#endif
 #if ENCODER_COUNTS_PER_REV == 0 || ENCODER_COUNTS_PER_REV > 0x200000u
 #error "Encoder counts per revolution must fit the phase counter"
 #endif

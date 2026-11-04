@@ -19,12 +19,12 @@ typedef enum {
     PMSM_FAULT_TEMP_DATA       = 1u << 9,
     PMSM_FAULT_DQ_DATA         = 1u << 10,
     PMSM_FAULT_NUMERIC         = 1u << 11,
-    PMSM_FAULT_SPEED_ERROR     = 1u << 12,
+    /* bit12保留，原未接入的速度误差保护已移除；其余故障位保持不变。 */
     PMSM_FAULT_CONFIG          = 1u << 13,
     PMSM_FAULT_INPUT           = 1u << 14
 } pmsm_fault_t;
 
-/* 由正式控制层填写一致快照，不依赖adc.h、encoder.h或pwm_test。
+/* 由正式控制层填写一致快照，不依赖ADC或编码器驱动实现。
  * age为实际数据年龄，不是本次复制快照后的时间；valid不能凭raw非零推断。
  * 电流mA，速度为电机轴编码器计数/秒，辅助采样为16位原始码。 */
 typedef struct {
@@ -35,8 +35,6 @@ typedef struct {
     bool encoder_valid;
     float speed_counts_s;
     uint32_t encoder_age_ms;
-    bool speed_loop_active;
-    float target_speed_counts_s;
     bool dq_valid;
     float id_ma, iq_ma;
     bool bus_valid, temperature_valid;
@@ -56,7 +54,7 @@ void pmsm_protect_init(pmsm_protect_t *protect);
 /* 每次检查输入，返回active|latched；参数错误返回PMSM_FAULT_INPUT。
  * 关桥时缺少/过旧数据只阻止使能；有效数据超限仍锁存。
  * 运行时任何启用的检查失败都锁存。无硬件副作用，不自动关桥或复位PI。
- * 同一状态仅由一个上下文访问；上层决定调用时机，当前不使用旧*_TICKS降采样。 */
+ * 同一状态仅由一个上下文访问；上层按每个完整ADC新帧调用。 */
 uint32_t pmsm_protect_check(pmsm_protect_t *protect, const pmsm_protect_input_t *input) MOTOR_RAMFUNC;
 /* 只查询最近检查结果；使能前必须以新鲜输入再次check。 */
 bool pmsm_protect_can_enable(const pmsm_protect_t *protect) MOTOR_RAMFUNC;

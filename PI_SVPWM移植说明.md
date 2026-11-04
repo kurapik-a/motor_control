@@ -1,6 +1,6 @@
 # PI、SVPWM 与电压开环
 
-> 最新状态：已将 `pmsm_control.c/.h` 重命名为 `pmsm_foc.c/.h`，增加独立Clarke/Park/反Park，默认ENABLE启动正式电流对齐及闭环。当前用法见 [电流环移植说明.md](电流环移植说明.md)。以下保留为电压开环阶段记录，只有设置 `MOTOR_CONTROL_USE_CURRENT_LOOP=0` 才使用开环入口。
+> 历史记录：现使用`pmsm_foc.c/.h`的独立Clarke/Park/反Park，ENABLE仅启动电流对齐和闭环。开环源码、专属参数、测试脚本及切换宏已于2026-11-04删除，下文仅保留早期移植过程；当前用法见 [电流环移植说明.md](电流环移植说明.md)。
 
 更新：2026-11-03。本阶段移植原工程的 PI、反 Park、六扇区 SVPWM，恢复调试器及 VOFA ENABLE 启动的电压开环。尚未闭合电流环，也没有执行编码器电角度对齐。
 

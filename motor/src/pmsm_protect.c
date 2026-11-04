@@ -44,14 +44,6 @@ static uint32_t evaluate(const pmsm_protect_input_t *input)
     else {
         if (over_limit(input->speed_counts_s, MOTOR_PROTECT_SPEED_LIMIT_COUNTS_S))
             faults |= PMSM_FAULT_OVERSPEED;
-#if MOTOR_PROTECT_SPEED_ERROR_ENABLE
-        if (!positive(MOTOR_NORMAL_SPEED_ERROR_LIMIT_COUNTS_S)) faults |= PMSM_FAULT_CONFIG;
-        if (input->speed_loop_active) {
-            float error = input->target_speed_counts_s - input->speed_counts_s;
-            if (!finite_value(input->target_speed_counts_s) || !finite_value(error)) faults |= PMSM_FAULT_NUMERIC;
-            else if (over_limit(error, MOTOR_NORMAL_SPEED_ERROR_LIMIT_COUNTS_S)) faults |= PMSM_FAULT_SPEED_ERROR;
-        }
-#endif
     }
 #endif
 #if MOTOR_PROTECT_BUS_ENABLE

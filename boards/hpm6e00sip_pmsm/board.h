@@ -7,6 +7,7 @@
 
 #ifndef _HPM_BOARD_H
 #define _HPM_BOARD_H
+#include "motor_config.h"
 /* 板级基础配置独立于待重写的电机库。 */
 #include <stdio.h>
 #include "hpm_common.h"
@@ -135,7 +136,7 @@
 #define BOARD_CONSOLE_UART_RX_DMA_REQ HPM_DMA_SRC_UART1_RX
 #endif
 #endif
-#define BOARD_CONSOLE_UART_BAUDRATE 115200u
+#define BOARD_CONSOLE_UART_BAUDRATE MOTOR_VOFA_BAUDRATE
 #endif
 #endif
 

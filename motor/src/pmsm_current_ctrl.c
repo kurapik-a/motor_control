@@ -127,6 +127,7 @@ static void current_sample(const adc_data_t *sample, int status)
     pmsm_dq_t dq, udq;
     pmsm_pwm_t wave;
     bool controlling = active();
+    bool aligning = pmsm_current_monitor.state == PMSM_CURRENT_ALIGNING;
     began = hpm_csr_get_core_cycle();
     if (status != 0) { if (controlling) current_trip(PMSM_CURRENT_ADC_FAULT); return; }
     encoder_status = encoder_read_phase(&phase);
@@ -183,13 +184,19 @@ static void current_sample(const adc_data_t *sample, int status)
         current_trip(PMSM_FAULT_NUMERIC); return;
     }
     udq.d = id_pi.out; udq.q = iq_pi.out;
-    magnitude = cc_abs(udq.d)+cc_abs(udq.q);
-    pmsm_current_monitor.voltage_limited = magnitude > MOTOR_CURRENT_CTRL_VOLTAGE_LIMIT_TICKS;
-    if (pmsm_current_monitor.voltage_limited) {
-        scale = MOTOR_CURRENT_CTRL_VOLTAGE_LIMIT_TICKS / magnitude;
-        udq.d *= scale; udq.q *= scale;
-        id_pi.mem = previous_d; iq_pi.mem = previous_q; /* 总电压限幅时也冻结积分。 */
+    pmsm_current_monitor.id_voltage_limited = id_pi.limited;
+    pmsm_current_monitor.iq_voltage_limited = iq_pi.limited;
+    pmsm_current_monitor.alignment_voltage_limited = false;
+    if (aligning) {
+        magnitude = cc_abs(udq.d)+cc_abs(udq.q);
+        if (magnitude > MOTOR_CURRENT_ALIGN_VOLTAGE_LIMIT_TICKS) {
+            pmsm_current_monitor.alignment_voltage_limited = true;
+            scale = MOTOR_CURRENT_ALIGN_VOLTAGE_LIMIT_TICKS / magnitude;
+            udq.d *= scale; udq.q *= scale;
+            id_pi.mem = previous_d; iq_pi.mem = previous_q; /* 仅对齐阶段总限幅时冻结两轴积分。 */
+        }
     }
+    pmsm_current_monitor.voltage_limited = id_pi.limited || iq_pi.limited || pmsm_current_monitor.alignment_voltage_limited;
     if (pmsm_inv_park(&udq, &trig, &voltage) || pmsm_svpwm(voltage.alpha, voltage.beta, reload, &wave)) {
         current_trip(PMSM_FAULT_NUMERIC); return;
     }
@@ -314,8 +321,8 @@ int pmsm_current_ctrl_init(void)
     memset(&input, 0, sizeof(input));
     pmsm_protect_init(&protection);
     reload = pwm_get_reload();
-    id_pi.kp = MOTOR_CURRENT_D_KP; id_pi.ki = MOTOR_CURRENT_D_KI; id_pi.limit = MOTOR_NORMAL_D_VOLTAGE_LIMIT_TICKS;
-    iq_pi.kp = MOTOR_CURRENT_Q_KP; iq_pi.ki = MOTOR_CURRENT_Q_KI; iq_pi.limit = MOTOR_NORMAL_Q_VOLTAGE_LIMIT_TICKS;
+    id_pi.kp = MOTOR_CURRENT_D_KP; id_pi.ki = MOTOR_CURRENT_D_KI; id_pi.limit = MOTOR_CURRENT_D_VOLTAGE_LIMIT_TICKS;
+    iq_pi.kp = MOTOR_CURRENT_Q_KP; iq_pi.ki = MOTOR_CURRENT_Q_KI; iq_pi.limit = MOTOR_CURRENT_Q_VOLTAGE_LIMIT_TICKS;
     pmsm_pi_reset(&id_pi); pmsm_pi_reset(&iq_pi);
     if (!(MOTOR_CURRENT_FILTER_ALPHA > 0 && MOTOR_CURRENT_FILTER_ALPHA <= 1) ||
         !(MOTOR_SPEED_FILTER_ALPHA > 0 && MOTOR_SPEED_FILTER_ALPHA <= 1) ||
@@ -323,7 +330,7 @@ int pmsm_current_ctrl_init(void)
         !cc_finite(MOTOR_CURRENT_CTRL_MAX_COMMAND_MA) || MOTOR_CURRENT_CTRL_MAX_COMMAND_MA > MOTOR_PROTECT_PHASE_LIMIT_MA ||
         !cc_finite(MOTOR_CURRENT_CTRL_DEFAULT_IQ_MA) || cc_abs(MOTOR_CURRENT_CTRL_DEFAULT_IQ_MA) > MOTOR_CURRENT_CTRL_MAX_COMMAND_MA ||
         !(MOTOR_CURRENT_ALIGN_CURRENT_MA > 0 && MOTOR_CURRENT_ALIGN_CURRENT_MA < MOTOR_PROTECT_PHASE_LIMIT_MA) ||
-        !(MOTOR_CURRENT_CTRL_VOLTAGE_LIMIT_TICKS > 0 && MOTOR_CURRENT_CTRL_VOLTAGE_LIMIT_TICKS < reload) ||
+        !(MOTOR_CURRENT_ALIGN_VOLTAGE_LIMIT_TICKS > 0 && MOTOR_CURRENT_ALIGN_VOLTAGE_LIMIT_TICKS < reload) ||
         !(MOTOR_CURRENT_CTRL_SLEW_MA_S > 0) ||
         !cc_finite(MOTOR_CURRENT_CTRL_SLEW_MA_S) ||
         !(MOTOR_CURRENT_ALIGN_ERROR_MA > 0 && MOTOR_CURRENT_ALIGN_ERROR_MA < MOTOR_CURRENT_ALIGN_CURRENT_MA * 0.5f) ||

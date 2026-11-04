@@ -94,7 +94,7 @@ PWM 触发 → 两路 ADC 转换并写 DMA → ADC 完成中断调用 `service_f
 
 - `tests/run_adc_pwm_sync_tests.ps1`
 - `tests/run_pwm_adc_timing_tests.ps1`
-- `tests/run_pwm_test.ps1`：保留的开环测试逻辑回归，不代表主程序正在运行开环测试。
+- 开环测试专属回归脚本已随开环模块于2026-11-04删除；当前闭环回归见`tests/run_current_ctrl_tests.ps1`。
 - `tests/check_adc_realtime_placement.py`：检查最终 ELF 的快速区放置和关键调用；使用 SDK Python，传入 ELF 路径及 `--objdump` 工具路径。
 - GCC 构建入口：`build.ps1`；SES 工程：`build/segger_embedded_studio/motor_control.emProject`。
 

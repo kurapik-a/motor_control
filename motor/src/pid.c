@@ -12,7 +12,7 @@ MOTOR_INLINE int pid_finite(float value) { return value >= -FLT_MAX && value <= 
 
 void pmsm_pi_reset(pmsm_pi_t *pi)
 {
-    if (pi) pi->mem = pi->out = 0.0f;
+    if (pi) { pi->mem = pi->out = 0.0f; pi->limited = false; }
 }
 
 int pmsm_pi_step(pmsm_pi_t *pi, HPM_MOTOR_MATH_TYPE target, HPM_MOTOR_MATH_TYPE feedback)
@@ -26,6 +26,7 @@ int pmsm_pi_step(pmsm_pi_t *pi, HPM_MOTOR_MATH_TYPE target, HPM_MOTOR_MATH_TYPE 
     integral = HPM_MOTOR_MATH_MUL(error, pi->ki) + pi->mem;
     result = integral + HPM_MOTOR_MATH_MUL(error, pi->kp);
     if (!pid_finite(error) || !pid_finite(integral) || !pid_finite(result)) return -1;
+    pi->limited = result < -pi->limit || result > pi->limit;
     if (result < -pi->limit) result = -pi->limit;
     else if (result > pi->limit) result = pi->limit;
     else pi->mem = integral;
