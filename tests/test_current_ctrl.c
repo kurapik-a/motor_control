@@ -11,6 +11,10 @@
 #include "encoder.h"
 #include "pwm.h"
 #define CHECK(x) do { if (!(x)) {fprintf(stderr,"FAIL %d: %s (state=%d fault=%u)\n",__LINE__,#x,pmsm_current_monitor.state,pmsm_current_monitor.faults);exit(1);} } while(0)
+/* 离线电气模型参数，不参与固件在线控制，也不占用motor_config配置项。 */
+#define PLANT_RESISTANCE_OHM 0.225f
+#define PLANT_INDUCTANCE_H 0.00026f
+#define PLANT_BUS_V 24.0f
 uint32_t hpm_core_clock=1000000;
 static uint64_t cycles;
 static uint32_t cycle_step, phase=3999, pwm_commits;
@@ -18,7 +22,7 @@ static int adc_status, encoder_status;
 static bool enabled;
 static unsigned irq_depth;
 static unsigned noise_period;
-static float plant_u, plant_v;
+static float plant_u, plant_v, opposing_beta_v;
 static uint32_t plant_pwm_u=5000, plant_pwm_v=5000, plant_pwm_w=5000;
 static adc_data_t sample;
 static adc_control_callback_t adc_callback;
@@ -73,10 +77,13 @@ static void frame(bool follow) {
         /* 固定转子的三相RL电气模型，由实际PWM输出驱动，不把目标直接当反馈。
          * 不模拟机械对齐运动；这里只验证闭环电气反馈及状态机。 */
         float common=((float)plant_pwm_u+plant_pwm_v+plant_pwm_w)/3.0f;
-        float vu=((float)plant_pwm_u-common)*MOTOR_NOMINAL_BUS_V/10000.0f;
-        float vv=((float)plant_pwm_v-common)*MOTOR_NOMINAL_BUS_V/10000.0f;
-        plant_u+=(vu-MOTOR_RESISTANCE_OHM*plant_u)*0.00005f/MOTOR_INDUCTANCE_H;
-        plant_v+=(vv-MOTOR_RESISTANCE_OHM*plant_v)*0.00005f/MOTOR_INDUCTANCE_H;
+        float vu=((float)plant_pwm_u-common)*PLANT_BUS_V/10000.0f;
+        float vv=((float)plant_pwm_v-common)*PLANT_BUS_V/10000.0f;
+        /* 固定dq坐标下叠加beta轴反向电压，验证反电动势占用电压裕量。
+         * 这是电气扰动模型，不代表机械转速/真实转子对齐仿真。 */
+        vv-=0.86602540378f*opposing_beta_v;
+        plant_u+=(vu-PLANT_RESISTANCE_OHM*plant_u)*0.00005f/PLANT_INDUCTANCE_H;
+        plant_v+=(vv-PLANT_RESISTANCE_OHM*plant_v)*0.00005f/PLANT_INDUCTANCE_H;
         sample.current_u_ma=plant_u*1000.0f;sample.current_v_ma=plant_v*1000.0f;
         sample.current_w_ma=-sample.current_u_ma-sample.current_v_ma;
     }
@@ -94,11 +101,14 @@ static void frame(bool follow) {
     }
     cycles+=50;fresh();++sample.sample_count;
     CHECK(adc_callback);adc_callback(&sample,adc_status);
+    if(enabled && pmsm_current_monitor.state==PMSM_CURRENT_ALIGNING) {
+        CHECK(fabsf(pmsm_current_monitor.ud)+fabsf(pmsm_current_monitor.uq)<=MOTOR_CURRENT_ALIGN_VOLTAGE_LIMIT_TICKS+0.01f);
+    }
     CHECK(!irq_depth);
 }
 static void zero_and_clear(void) {
     cycle_step=0;encoder_status=adc_status=0;
-    plant_u=plant_v=0;
+    plant_u=plant_v=opposing_beta_v=0;
     sample.current_u_ma=sample.current_v_ma=sample.current_w_ma=0;fresh();
     frame(false);frame(false); /* ADC/编码器恢复后提供新的速度观测，不能复用故障前缓存。 */
     CHECK(command("CLEAR_FAULT\r")==0 && !enabled);
@@ -133,6 +143,18 @@ int main(void) {
     CHECK(pmsm_current_monitor.updates==count+12000);
     CHECK(fabsf(pmsm_current_monitor.iq_ref_ma-500)<1 && fabsf(pmsm_current_monitor.iq_ma-500)<30);
     CHECK(pmsm_current_monitor.id_ref_ma==0 && fabsf(pmsm_current_monitor.angle_deg)<0.001f);
+    /* 500mA在0.625V反向电压下需要约0.7375V；旧500计数总限幅
+     * 仅能输出约0.693V，使反馈停在约300mA。缓升扰动避免阶跃过流。 */
+    for(i=0;i<10000;++i) {opposing_beta_v=0.625f*(i+1)/10000.0f;frame(true);}
+    for(i=0;i<15000;++i)frame(true);
+    printf("Opposing-voltage test: Iq_ref=%.1f mA Iq=%.1f mA Ud=%.1f Uq=%.1f ticks\n",
+        pmsm_current_monitor.iq_ref_ma,pmsm_current_monitor.iq_ma,pmsm_current_monitor.ud,pmsm_current_monitor.uq);
+    CHECK(pmsm_current_monitor.state==PMSM_CURRENT_RUNNING && !pmsm_current_monitor.faults);
+    CHECK(fabsf(pmsm_current_monitor.iq_ma-500)<30 && fabsf(pmsm_current_monitor.id_ma)<30);
+    CHECK(pmsm_current_monitor.uq>500);
+    CHECK(!pmsm_current_monitor.alignment_voltage_limited && !pmsm_current_monitor.voltage_limited);
+    /* 先缓慢去除扰动，再检查负电流与停机。 */
+    for(i=0;i<10000;++i) {opposing_beta_v=0.625f*(9999-i)/10000.0f;frame(true);}
     CHECK(command("SET,CURRENT_MA,-500\r")==0);
     for(i=0;i<15000;++i)frame(true);
     CHECK(fabsf(pmsm_current_monitor.iq_ref_ma+500)<1);

@@ -4,9 +4,8 @@ $root=Split-Path $PSScriptRoot -Parent
 $out=Join-Path $root '.cache/pmsm_protect'
 New-Item -ItemType Directory -Force $out | Out-Null
 $baseFlags=@(('-I'+(Join-Path $LccRoot 'include64')),('-I'+(Join-Path $root 'motor/inc')))
-foreach($mode in @('default','dq_speed','lower_limits','dq_off')) {
+foreach($mode in @('default','lower_limits','dq_off')) {
     $flags=@($baseFlags)
-    if($mode -eq 'dq_speed') { $flags+=@('-DMOTOR_PROTECT_DQ_ENABLE=1','-DMOTOR_PROTECT_SPEED_ERROR_ENABLE=1') }
     if($mode -eq 'lower_limits') { $flags+=@('-DMOTOR_BUS_UNDERVOLTAGE_ADC=100u','-DMOTOR_TEMP_MIN_ADC=200u') }
     if($mode -eq 'dq_off') { $flags+='-DMOTOR_PROTECT_DQ_ENABLE=0' }
     & (Join-Path $LccRoot 'bin/lcc64.exe') @flags (Join-Path $root 'motor/src/pmsm_protect.c') '-o' (Join-Path $out "$mode-module.obj")

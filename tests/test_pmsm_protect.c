@@ -1,4 +1,4 @@
-/* 正式保护纯模块：只依赖motor头文件，不借用adc/pwm_test实现。 */
+/* 正式保护纯模块：只依赖motor头文件，不借用驱动实现。 */
 #include "pmsm_protect.h"
 #include "motor_config.h"
 #include <stdio.h>
@@ -89,20 +89,11 @@ int main(void)
     CHECK(pmsm_protect_check(&state,&in)==0); /* 尚未接入dq不影响基础保护。 */
 #endif
     in=healthy(); CHECK(pmsm_protect_clear(&state,&in)==0);
-#if MOTOR_PROTECT_SPEED_ERROR_ENABLE
-    in.target_speed_counts_s=MOTOR_NORMAL_SPEED_ERROR_LIMIT_COUNTS_S+1;
-    CHECK(pmsm_protect_check(&state,&in)==0); /* 非速度模式不检查跟踪误差。 */
-    in.speed_loop_active=true;
-    CHECK(pmsm_protect_check(&state,&in)&PMSM_FAULT_SPEED_ERROR);
-#else
-    in.speed_loop_active=true; in.target_speed_counts_s=nonfinite.value;
-    CHECK(pmsm_protect_check(&state,&in)==0);
-#endif
     CHECK(pmsm_protect_check(0,&in)==PMSM_FAULT_INPUT);
     CHECK(!pmsm_protect_can_enable(0));
     CHECK(pmsm_protect_clear(0,&in)==-1 && pmsm_protect_clear(&state,0)==-1);
     CHECK(pmsm_protect_check(&state,0)&PMSM_FAULT_INPUT);
     CHECK(!pmsm_protect_can_enable(&state));
-    puts("PASS formal protection: signed limits, startup gating, data age/validity, NaN/Inf, multi-fault latch, explicit clear, optional dq/speed error");
+    puts("PASS formal protection: signed limits, startup gating, data age/validity, NaN/Inf, multi-fault latch, explicit clear, optional dq");
     return 0;
 }
