@@ -24,7 +24,20 @@ placed = ["adc_u_isr", "adc_v_isr", "service_frame", "arm_frame", "read_dma_word
           "update_sample", "adc_poll", "adc_read", "adc_init", "read_aux_results",
           "pwm_set_adc_trigger_enabled", "pwm_get_adc_trigger_timing", "motor_vofa_set_encoder", "motor_vofa_poll"]
 placed += ["pwm_set_counts", "pwm_enable", "pwm_disable",
-           "pwm_set_current_loop_callback", "pwm_test_stop", "test_tick"]
+           "pwm_set_current_loop_callback", "pwm_current_loop_isr", "pwm_get_reload", "pwm_is_enabled", "capture_aux_flags"]
+current_chain = ["current_sample", "current_trip", "current_watchdog", "collect_input", "prepare_feedback", "qualify_alignment",
+                 "pmsm_current_ctrl_start", "pmsm_current_ctrl_stop", "pmsm_current_ctrl_set_target",
+                 "pmsm_current_ctrl_clear_fault", "pmsm_current_ctrl_poll", "pmsm_current_ctrl_get_status",
+                 "pmsm_clarke", "pmsm_park", "pmsm_inv_park", "pmsm_sincos", "pmsm_svpwm",
+                 "pmsm_pi_step", "pmsm_pi_reset", "pmsm_protect_check", "pmsm_protect_can_enable",
+                 "pmsm_protect_clear", "evaluate", "encoder_read_phase"]
+if "current_sample" in symbols:
+    placed += current_chain
+    assert "foc_sine_quarter" in dump("-t"), "Missing FOC sine table"
+    table = next(line for line in dump("-t").splitlines() if line.split() and line.split()[-1] == "foc_sine_quarter")
+    assert 0x1200000 <= int(table.split()[0], 16) < 0x1240000, "FOC table must be in DLM"
+else:
+    placed += ["pwm_test_stop", "test_tick"]
 for name in placed:
     assert name in symbols, f"Missing realtime symbol: {name}"
     assert 0 <= symbols[name] < 0x40000, f"Not in local ILM: {name} at {symbols[name]:#x}"
@@ -34,7 +47,8 @@ for name in placed:
 checked = ["adc_u_isr", "adc_v_isr", "service_frame", "arm_frame", "read_dma_word",
            "update_sample", "adc_read", "pwm_set_adc_trigger_enabled"]
 checked += ["pwm_set_counts", "pwm_enable", "pwm_disable",
-            "pwm_set_current_loop_callback", "pwm_test_stop", "test_tick"]
+            "pwm_set_current_loop_callback", "pwm_current_loop_isr", "pwm_get_reload", "pwm_is_enabled", "capture_aux_flags"]
+checked += current_chain if "current_sample" in symbols else ["pwm_test_stop", "test_tick"]
 for name in checked:
     assembly = dump("-d", f"--disassemble={name}")
     if not re.search(r"^\s*[0-9a-fA-F]+:\s", assembly, re.M):
@@ -43,6 +57,16 @@ for name in checked:
         object_root = Path(args.elf).resolve().parent.parent / "Obj"
         if name in {"pwm_test_stop", "test_tick"}:
             filename = "pwm_test.c.o"
+        elif name.startswith("pmsm_current_ctrl_") or name in {"current_sample", "current_trip", "current_watchdog", "collect_input", "prepare_feedback", "qualify_alignment"}:
+            filename = "pmsm_current_ctrl.c.o"
+        elif name.startswith("pmsm_protect_") or name == "evaluate":
+            filename = "pmsm_protect.c.o"
+        elif name.startswith("pmsm_pi_"):
+            filename = "pid.c.o"
+        elif name.startswith("pmsm_"):
+            filename = "pmsm_foc.c.o"
+        elif name == "encoder_read_phase":
+            filename = "encoder.c.o"
         elif name.startswith("pwm_"):
             filename = "pwm.c.o"
         else:
@@ -64,4 +88,4 @@ for name in checked:
     if name == "service_frame":
         assert "rdcycle" in assembly, f"Timestamp not inlined in {name}"
 
-print("PASS realtime image: ADC/open-loop ILM placement, inline cycle reads, no direct Flash calls in critical paths")
+print("PASS realtime image: ADC/control ILM placement, DLM FOC table, inline cycle reads, no direct Flash calls in critical paths")

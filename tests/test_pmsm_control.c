@@ -5,7 +5,7 @@
 #include <float.h>
 #include "pid.h"
 #define fmodf(x,y) ((float)fmod((double)(x),(double)(y))) /* LCC运行库兼容 */
-#include "../motor/src/pmsm_control.c"
+#include "../motor/src/pmsm_foc.c"
 #define CHECK(x) do { if (!(x)) {fprintf(stderr,"FAIL line %d: %s\n",__LINE__,#x);exit(1);} } while(0)
 int main(void)
 {
@@ -38,6 +38,19 @@ int main(void)
     }
     CHECK((sectors & 0x7e)==0x7e);
     saved=pwm;
+    /* 验证新Clarke/Park/反Park和查表插值的坐标/符号约定。 */
+    for(angle=-720;angle<=720;++angle) {
+        pmsm_trig_t trig;
+        pmsm_ab_t ab, recovered;
+        pmsm_dq_t dq;
+        CHECK(pmsm_sincos((float)angle,&trig)==0);
+        CHECK(fabsf(trig.sine-sinf(angle*0.01745329251994329577f))<0.00001f);
+        CHECK(fabsf(trig.cosine-cosf(angle*0.01745329251994329577f))<0.00001f);
+        CHECK(pmsm_clarke(1000,-500,&ab)==0 && ab.alpha==1000 && ab.beta==0);
+        CHECK(pmsm_park(&ab,&trig,&dq)==0);
+        CHECK(pmsm_inv_park(&dq,&trig,&recovered)==0);
+        CHECK(fabsf(recovered.alpha-1000)<0.02f && fabsf(recovered.beta)<0.02f);
+    }
     CHECK(pmsm_svpwm(nan_value.value,0,10000,&pwm)==-1);
     CHECK(pwm.u==saved.u && pwm.v==saved.v && pwm.w==saved.w);
     CHECK(pmsm_svpwm(FLT_MAX,0,10000,&pwm)==-1);

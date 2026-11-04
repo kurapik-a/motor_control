@@ -1,6 +1,8 @@
 #ifndef ADC_TEST_PLATFORM_H
 #define ADC_TEST_PLATFORM_H
 #define ADC_HOST_TEST 1
+#define ADC_AUX_BUS_FLAG (1u << 16)
+#define ADC_AUX_TEMP_FLAG (1u << 17)
 #include <stdint.h>
 #include <stdbool.h>
 #define ADC_SOC_PMT_MAX_DMA_BUFF_LEN_IN_4BYTES 40
@@ -41,7 +43,7 @@
 #define core_local_mem_to_sys_address(core,addr) (addr)
 typedef struct {unsigned id,flags,interrupts;unsigned sample_cycles[16],period_count[16],prescale[16];uint16_t period_results[16];} ADC16_Type;
 typedef struct {struct {unsigned FUNC_CTL;} PAD[2];} mock_ioc_t;
-typedef struct {unsigned ch,sample_cycle;} adc16_channel_config_t;
+typedef struct {unsigned ch,sample_cycle; uint16_t thshdh,thshdl; bool wdog_int_en;} adc16_channel_config_t;
 typedef struct {unsigned res,conv_mode,adc_clk_div;bool sel_sync_ahb,adc_ahb_en;} adc16_config_t;
 typedef struct {unsigned trig_ch,trig_len,adc_ch[4];bool inten[4];} adc16_pmt_config_t;
 typedef struct {uint8_t ch,prescale,period_count;} adc16_prd_config_t;

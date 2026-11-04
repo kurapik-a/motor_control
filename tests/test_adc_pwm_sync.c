@@ -16,6 +16,13 @@ static bool gate,enabled,near_edge;
 static unsigned irq_depth,reload_value=10000;
 static int init_fail,aux_fail;
 static unsigned reject_enable_count;
+static unsigned frame_callbacks, fault_callbacks;
+static void control_received(const adc_data_t *sample, int status)
+{
+ CHECK(sample);
+ if(status) {++fault_callbacks;CHECK(!enabled && !sample->sample_valid);}
+ else {++frame_callbacks;CHECK(sample->sample_valid && sample->publish_cycles>=sample->capture_cycles);}
+}
 static void check_arm_prepared(void);
 uint32_t disable_global_irq(uint32_t x){(void)x;++irq_depth;return 0;}
 void restore_global_irq(uint32_t x){(void)x;CHECK(irq_depth);--irq_depth;}
@@ -146,6 +153,20 @@ int main(void)
  init_fail=-1;CHECK(adc_init()==-4);init_fail=0;
  aux_fail=1;CHECK(adc_init()==-4 && !gate && !enabled);aux_fail=0;
  CHECK(!irq_depth);
+ /* 新帧只回调一次；两路中断、前台重复read/poll均不能重复算电流环。 */
+ reset();CHECK(adc_set_control_callback(control_received)==0);
+ enabled=true;CHECK(adc_set_control_callback(0)==-9);enabled=false;
+ frame(32768,32768);CHECK(frame_callbacks==1 && !fault_callbacks);
+ adc_poll();adc_read(&sample);CHECK(frame_callbacks==1);
+ /* 辅助SDK读取成功不等于新转换；只有WDOG事件推进有效标志和时间。 */
+ CHECK(!sample.bus_valid && !sample.temperature_valid);
+ mock_adc[0].flags|=ADC_AUX_BUS_FLAG|ADC_AUX_TEMP_FLAG;
+ adc_poll();adc_read(&sample);
+ CHECK(sample.bus_valid && sample.temperature_valid);
+ {uint64_t stamp=sample.bus_cycles;adc_poll();adc_read(&sample);CHECK(sample.bus_cycles==stamp);}
+ now=frame_deadline+1;adc_poll();CHECK(fault_callbacks==1);
+ adc_poll();CHECK(fault_callbacks==1);
+ CHECK(adc_set_control_callback(0)==0);
  puts("PASS ADC PWM sync: U/V-only DMA, independent auxiliary periods, both IRQ orders, deferred DMA, offset timing, currents, deadline, conflict, tags, calibration guard");
  return 0;
 }

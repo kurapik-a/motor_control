@@ -8,6 +8,7 @@ $out=Join-Path $root '.cache/vofa_open_loop'
 $vofa=Join-Path $SdkRoot 'hpm_apps/middleware/vofa_debug'
 New-Item -ItemType Directory -Force $out | Out-Null
 $flags=@(('-I'+(Join-Path $LccRoot 'include64')),('-I'+(Join-Path $PSScriptRoot 'vofa_host')),('-I'+(Join-Path $PSScriptRoot 'host')),('-I'+(Join-Path $root 'app/inc')),('-I'+(Join-Path $root 'app/src')),('-I'+(Join-Path $root 'motor/inc')),('-I'+(Join-Path $vofa 'inc')),('-I'+(Join-Path $vofa 'src')),('-I'+(Join-Path $vofa 'port/hpm_uart')))
+$flags+='-DMOTOR_CONTROL_USE_CURRENT_LOOP=0'
 & (Join-Path $LccRoot 'bin/lcc64.exe') @flags (Join-Path $PSScriptRoot 'test_vofa_open_loop.c') '-o' (Join-Path $out 'test.obj')
 if($LASTEXITCODE -ne 0){throw 'VOFA open-loop compilation failed'}
 & (Join-Path $LccRoot 'bin/lcc64.exe') @flags (Join-Path $PSScriptRoot 'vofa_protocol_host.c') '-o' (Join-Path $out 'vofa.obj')

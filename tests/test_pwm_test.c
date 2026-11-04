@@ -36,7 +36,7 @@ int pwm_set_current_loop_callback(pwm_current_loop_callback_t cb) {callback=cb; 
 #define fminf(a,b) ((a)<(b)?(a):(b))
 #define fmaxf(a,b) ((a)>(b)?(a):(b))
 #define fmodf(x,y) ((float)fmod((double)(x),(double)(y)))
-#include "../motor/src/pmsm_control.c"
+#include "../motor/src/pmsm_foc.c"
 #include "pwm_test.c"
 static void fresh(void) {++input.sample_count; input.capture_cycles=cycles;}
 static void tick(unsigned count, bool service) {
