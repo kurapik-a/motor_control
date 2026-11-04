@@ -5,6 +5,7 @@
 #include <math.h>
 #include "pmsm_current_ctrl.h"
 #include "pmsm_init.h"
+#include "pmsm_speed_ctrl.h"
 #include "motor_config.h"
 #include "motor_vofa.h"
 #include "vofa_hpm_uart.h"
@@ -27,6 +28,8 @@ static uint32_t generation, encoder_resets;
 static unsigned init_order;
 static int reset_result;
 static bool inhibit_finish;
+static bool mechanical;
+static float plant_omega, plant_position, load_torque;
 static float plant_u, plant_v, opposing_beta_v;
 static uint32_t plant_pwm_u=5000, plant_pwm_v=5000, plant_pwm_w=5000;
 static adc_data_t sample;
@@ -89,11 +92,28 @@ static void frame(bool follow) {
         float common=((float)plant_pwm_u+plant_pwm_v+plant_pwm_w)/3.0f;
         float vu=((float)plant_pwm_u-common)*PLANT_BUS_V/10000.0f;
         float vv=((float)plant_pwm_v-common)*PLANT_BUS_V/10000.0f;
+        float theta=plant_position*0.00157079632679f*MOTOR_POLE_PAIRS;
+        if(mechanical) {
+            float ealpha=-0.0333333333f*plant_omega*sinf(theta);
+            float ebeta=0.0333333333f*plant_omega*cosf(theta);
+            if(!enabled)vu=vv=0;
+            vu-=ealpha;vv-=(-ealpha+1.73205080757f*ebeta)*0.5f;
+        }
         /* 固定dq坐标下叠加beta轴反向电压，验证反电动势占用电压裕量。
          * 这是电气扰动模型，不代表机械转速/真实转子对齐仿真。 */
         vv-=0.86602540378f*opposing_beta_v;
         plant_u+=(vu-PLANT_RESISTANCE_OHM*plant_u)*0.00005f/PLANT_INDUCTANCE_H;
         plant_v+=(vv-PLANT_RESISTANCE_OHM*plant_v)*0.00005f/PLANT_INDUCTANCE_H;
+        if(mechanical) {
+            float beta=(plant_u+2*plant_v)*0.57735026919f;
+            float iq=-sinf(theta)*plant_u+cosf(theta)*beta;
+            int32_t raw_phase;
+            /* PMSM电气RL+反电动势+转矩/惯量/摩擦模型；编码器来自积分位置。 */
+            plant_omega+=(0.05f*iq-0.0005f*plant_omega-load_torque)*0.00005f/0.003f;
+            plant_position+=plant_omega*636.61977237f*0.00005f;
+            raw_phase=(int32_t)floor(plant_position*MOTOR_ENCODER_DIRECTION);
+            phase=(raw_phase%(int32_t)MOTOR_ABZ_COUNTS_PER_REV+MOTOR_ABZ_COUNTS_PER_REV)%MOTOR_ABZ_COUNTS_PER_REV;
+        }
         sample.current_u_ma=plant_u*1000.0f;sample.current_v_ma=plant_v*1000.0f;
         sample.current_w_ma=-sample.current_u_ma-sample.current_v_ma;
     }
@@ -115,6 +135,9 @@ static void frame(bool follow) {
     pmsm_init_poll();
     if(enabled && pmsm_current_monitor.state==PMSM_CURRENT_ALIGNING) {
         CHECK(fabsf(pmsm_current_monitor.ud)+fabsf(pmsm_current_monitor.uq)<=MOTOR_CURRENT_ALIGN_VOLTAGE_LIMIT_TICKS+0.01f);
+    }
+    if(enabled && pmsm_current_monitor.state==PMSM_CURRENT_RUNNING && pmsm_speed_monitor.speed_mode) {
+        CHECK(fabsf(pmsm_current_monitor.iq_ref_ma)<=MOTOR_SPEED_CTRL_IQ_LIMIT_MA);
     }
     CHECK(!irq_depth);
 }
@@ -140,11 +163,13 @@ static void zero_and_clear(void) {
 }
 int main(void) {
     unsigned i, count;
-    CHECK(motor_vofa_init()==0 && MOTOR_VOFA_CHANNEL_COUNT==8);
+    CHECK(motor_vofa_init()==0 && MOTOR_VOFA_CHANNEL_COUNT==10);
     CHECK(pmsm_init()==0 && init_order==3 && adc_callback && !enabled);
     CHECK(pmsm_init()==-2); /* 不允许重复初始化清除故障或重新对齐。 */
     pmsm_init_poll();CHECK(pmsm_init_monitor.state==PMSM_INIT_WAIT_SAMPLES && !enabled);
     CHECK(command("ENABLE,1\r")==-3 && !enabled);
+    CHECK(command("SET,SPEED_RPM,10\r")==-3);
+    CHECK(command("SET,SPEED_RPM,101\r")==-1);
     CHECK(command("STOP\r")==0);fresh();frame(false);frame(false);
     CHECK(pmsm_init_monitor.state==PMSM_INIT_CANCELLED && !enabled);
     for(i=0;i<10;++i)frame(false);CHECK(!enabled); /* STOP不能延后自动重启准备。 */
@@ -282,10 +307,50 @@ int main(void) {
     CHECK(!pmsm_is_ready() && !pmsm_current_monitor.aligned && !pmsm_current_monitor.faults);
     inhibit_finish=false;frame(true);
     CHECK(pmsm_is_ready() && !enabled);
+    CHECK(command("SET,SPEED_RPM,100\r")==0 && command("ENABLE,1\r")==0);
+    for(i=0;i<4000;++i)frame(true); /* 固定转子模型：速度误差持续存在，验证PI抗饱和。 */
+    CHECK(pmsm_speed_monitor.current_limited && pmsm_speed_monitor.iq_ref_ma==MOTOR_SPEED_CTRL_IQ_LIMIT_MA);
+    CHECK(command("SET,SPEED_RPM,-100\r")==0);
+    for(i=0;i<4000;++i)frame(true);
+    CHECK(pmsm_speed_monitor.current_limited && pmsm_speed_monitor.iq_ref_ma==-MOTOR_SPEED_CTRL_IQ_LIMIT_MA);
+    CHECK(command("SET,SPEED_RPM,0\r")==0);
+    for(i=0;i<4000;++i)frame(true);
+    CHECK(fabsf(pmsm_speed_monitor.iq_ref_ma)<1); /* 没有累积不可恢复的积分。 */
+    CHECK(command("STOP\r")==0);
+    mechanical=true;plant_u=plant_v=plant_omega=plant_position=load_torque=0;phase=0;
+    CHECK(command("SET,SPEED_RPM,10\r")==0 && pmsm_speed_monitor.speed_mode);
+    CHECK(command("ENABLE,1\r")==0);
+    count=pmsm_speed_monitor.updates;
+    for(i=0;i<160000;++i)frame(true);
+    printf("Speed +10rpm: feedback=%.3f actual=%.3f Iq=%.1f mA updates=%u\n",pmsm_speed_monitor.feedback_output_rpm,
+        plant_omega*9.54929658551f/MOTOR_SPEED_REDUCTION_RATIO,pmsm_current_monitor.iq_ma,pmsm_speed_monitor.updates-count);
+    CHECK(pmsm_current_monitor.state==PMSM_CURRENT_RUNNING && !pmsm_current_monitor.faults);
+    CHECK(pmsm_speed_monitor.updates-count>=7999 && pmsm_speed_monitor.updates-count<=8001);
+    CHECK(fabsf(pmsm_speed_monitor.feedback_output_rpm-10)<0.5f);
+    CHECK(fabsf(plant_omega*9.54929658551f/MOTOR_SPEED_REDUCTION_RATIO-10)<0.5f);
+    load_torque=0.01f;for(i=0;i<120000;++i)frame(true);
+    CHECK(fabsf(pmsm_speed_monitor.feedback_output_rpm-10)<0.5f);
+    CHECK(fabsf(pmsm_speed_monitor.iq_ref_ma)<=MOTOR_SPEED_CTRL_IQ_LIMIT_MA);
+    CHECK(command("SET,SPEED_RPM,-10\r")==0);
+    for(i=0;i<200000;++i)frame(true);
+    printf("Speed -10rpm with load: feedback=%.3f Iq=%.1f mA\n",pmsm_speed_monitor.feedback_output_rpm,pmsm_current_monitor.iq_ma);
+    CHECK(fabsf(pmsm_speed_monitor.feedback_output_rpm+10)<0.5f && !pmsm_current_monitor.faults);
+    CHECK(command("SET,CURRENT_MA,100\r")==0 && !pmsm_speed_monitor.speed_mode);
+    frame(true);
+    CHECK(command("SET,SPEED_RPM,0\r")==0 && pmsm_speed_monitor.speed_mode && pmsm_speed_monitor.running);
+    for(i=0;i<160000;++i)frame(true);
+    CHECK(fabsf(pmsm_speed_monitor.feedback_output_rpm)<0.5f);
+    CHECK(command("STOP\r")==0 && !enabled && !pmsm_speed_monitor.running && pmsm_speed_monitor.iq_ref_ma==0);
+    CHECK(pmsm_speed_monitor.target_output_rpm==0);
+    CHECK(command("ENABLE,1\r")==0);frame(true);
+    cycles+=101;CHECK(watchdog);watchdog();
+    CHECK(!enabled && !pmsm_speed_monitor.running && pmsm_speed_monitor.iq_ref_ma==0 && pmsm_speed_monitor.target_output_rpm==0);
+    CHECK(pmsm_current_monitor.faults&PMSM_CURRENT_TIMING_FAULT);
+    CHECK(command("SET,SPEED_RPM,10\r")==-4);
     cycles+=10000;motor_vofa_poll();motor_vofa_poll();
-    CHECK(tx_size && tx_size%36==0);
-    for(i=0;i<tx_size;i+=36)CHECK(tx[i+32]==0 && tx[i+33]==0 && tx[i+34]==0x80 && tx[i+35]==0x7f);
+    CHECK(tx_size && tx_size%44==0);
+    for(i=0;i<tx_size;i+=44)CHECK(tx[i+40]==0 && tx[i+41]==0 && tx[i+42]==0x80 && tx[i+43]==0x7f);
     CHECK(pwm_commits>30000);
-    puts("PASS startup preparation: 2A alignment/release/encoder zero/READY, repeated ENABLE without alignment, cancel/retry, FOC/PI/protection/protocol, signed Iq, watchdog, budget, timeout, 8-channel JustFloat");
+    puts("PASS preparation/current/speed: startup alignment/READY, signed Iq, 1kHz cascaded speed tracking/load/reverse, mode switches, STOP/faults, 10-channel JustFloat");
     return 0;
 }
