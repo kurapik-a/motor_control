@@ -25,12 +25,13 @@ placed = ["adc_u_isr", "adc_v_isr", "service_frame", "arm_frame", "read_dma_word
           "pwm_set_adc_trigger_enabled", "pwm_get_adc_trigger_timing", "motor_vofa_set_encoder", "motor_vofa_poll"]
 placed += ["pwm_set_counts", "pwm_enable", "pwm_disable",
            "pwm_set_current_loop_callback", "pwm_current_loop_isr", "pwm_get_reload", "pwm_is_enabled", "capture_aux_flags"]
-current_chain = ["current_sample", "current_trip", "current_watchdog", "collect_input", "prepare_feedback", "qualify_alignment",
+current_chain = ["current_sample", "current_trip", "current_watchdog", "current_begin", "collect_input", "prepare_feedback", "qualify_alignment",
                  "pmsm_current_ctrl_start", "pmsm_current_ctrl_stop", "pmsm_current_ctrl_set_target",
                  "pmsm_current_ctrl_clear_fault", "pmsm_current_ctrl_poll", "pmsm_current_ctrl_get_status",
+                 "pmsm_current_ctrl_align", "pmsm_current_ctrl_finish_alignment",
                  "pmsm_clarke", "pmsm_park", "pmsm_inv_park", "pmsm_sincos", "pmsm_svpwm",
                  "pmsm_pi_step", "pmsm_pi_reset", "pmsm_protect_check", "pmsm_protect_can_enable",
-                 "pmsm_protect_clear", "evaluate", "encoder_read_phase"]
+                 "pmsm_protect_clear", "evaluate", "encoder_read_phase", "encoder_reset", "encoder_get_generation"]
 placed += current_chain
 assert "foc_sine_quarter" in dump("-t"), "Missing FOC sine table"
 table = next(line for line in dump("-t").splitlines() if line.split() and line.split()[-1] == "foc_sine_quarter")
@@ -52,7 +53,7 @@ for name in checked:
         # SES将ILM内容打包到启动初始化数据中，ELF的RAM段没有可直接反汇编的CONTENTS。
         # 地址取最终ELF，指令及调用重定位取同次构建的目标文件。
         object_root = Path(args.elf).resolve().parent.parent / "Obj"
-        if name.startswith("pmsm_current_ctrl_") or name in {"current_sample", "current_trip", "current_watchdog", "collect_input", "prepare_feedback", "qualify_alignment"}:
+        if name.startswith("pmsm_current_ctrl_") or name in {"current_sample", "current_trip", "current_watchdog", "current_begin", "collect_input", "prepare_feedback", "qualify_alignment"}:
             filename = "pmsm_current_ctrl.c.o"
         elif name.startswith("pmsm_protect_") or name == "evaluate":
             filename = "pmsm_protect.c.o"
@@ -60,7 +61,7 @@ for name in checked:
             filename = "pid.c.o"
         elif name.startswith("pmsm_"):
             filename = "pmsm_foc.c.o"
-        elif name == "encoder_read_phase":
+        elif name in {"encoder_read_phase", "encoder_reset", "encoder_get_generation"}:
             filename = "encoder.c.o"
         elif name.startswith("pwm_"):
             filename = "pwm.c.o"

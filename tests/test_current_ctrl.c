@@ -4,6 +4,7 @@
 #include <string.h>
 #include <math.h>
 #include "pmsm_current_ctrl.h"
+#include "pmsm_init.h"
 #include "motor_config.h"
 #include "motor_vofa.h"
 #include "vofa_hpm_uart.h"
@@ -22,6 +23,10 @@ static int adc_status, encoder_status;
 static bool enabled;
 static unsigned irq_depth;
 static unsigned noise_period;
+static uint32_t generation, encoder_resets;
+static unsigned init_order;
+static int reset_result;
+static bool inhibit_finish;
 static float plant_u, plant_v, opposing_beta_v;
 static uint32_t plant_pwm_u=5000, plant_pwm_v=5000, plant_pwm_w=5000;
 static adc_data_t sample;
@@ -35,6 +40,11 @@ uint64_t hpm_csr_get_core_cycle(void) {cycles+=cycle_step;return cycles;}
 uint32_t disable_global_irq(uint32_t mask) {(void)mask;++irq_depth;return 0;}
 void restore_global_irq(uint32_t value) {(void)value;CHECK(irq_depth);--irq_depth;}
 bool pwm_is_enabled(void) {return enabled;}
+int pwm_init(void) {CHECK(init_order==0);++init_order;enabled=false;return 0;}
+int encoder_init(void) {CHECK(init_order==1);++init_order;++generation;return 0;}
+int adc_init(void) {CHECK(init_order==2);++init_order;return 0;}
+uint32_t encoder_get_generation(void) {return generation;}
+int encoder_reset(void) {CHECK(!enabled);if(encoder_status || reset_result)return -1;phase=0;++generation;++encoder_resets;return 0;}
 uint32_t pwm_get_reload(void) {return 10000;}
 int pwm_set_counts(uint32_t u,uint32_t v,uint32_t w) {
     CHECK(u<=10000 && v<=10000 && w<=10000);
@@ -100,11 +110,24 @@ static void frame(bool follow) {
         sample.current_w_ma=-sample.current_u_ma-sample.current_v_ma;
     }
     cycles+=50;fresh();++sample.sample_count;
+    if(inhibit_finish && pmsm_current_monitor.state==PMSM_CURRENT_ALIGN_COMPLETE)sample.current_valid=false;
     CHECK(adc_callback);adc_callback(&sample,adc_status);
+    pmsm_init_poll();
     if(enabled && pmsm_current_monitor.state==PMSM_CURRENT_ALIGNING) {
         CHECK(fabsf(pmsm_current_monitor.ud)+fabsf(pmsm_current_monitor.uq)<=MOTOR_CURRENT_ALIGN_VOLTAGE_LIMIT_TICKS+0.01f);
     }
     CHECK(!irq_depth);
+}
+static void prepare_to_ready(void) {
+    unsigned i;
+    CHECK(pmsm_prepare()==0);
+    for(i=0;i<110000 && !pmsm_is_ready() && pmsm_current_monitor.state!=PMSM_CURRENT_FAULT;++i)frame(true);
+    CHECK(pmsm_is_ready() && !enabled && pmsm_current_monitor.aligned);
+}
+static void restart_alignment(void) {
+    CHECK(!enabled && encoder_reset()==0);frame(false);frame(false);
+    CHECK(!pmsm_current_monitor.aligned && pmsm_prepare()==0);
+    frame(true);CHECK(enabled && pmsm_current_monitor.state==PMSM_CURRENT_ALIGNING);
 }
 static void zero_and_clear(void) {
     cycle_step=0;encoder_status=adc_status=0;
@@ -112,25 +135,40 @@ static void zero_and_clear(void) {
     sample.current_u_ma=sample.current_v_ma=sample.current_w_ma=0;fresh();
     frame(false);frame(false); /* ADC/编码器恢复后提供新的速度观测，不能复用故障前缓存。 */
     CHECK(command("CLEAR_FAULT\r")==0 && !enabled);
+    pmsm_init_poll();
+    if(!pmsm_current_monitor.aligned)prepare_to_ready();
 }
 int main(void) {
     unsigned i, count;
-    CHECK(pmsm_current_ctrl_init()==0 && adc_callback && !enabled);
     CHECK(motor_vofa_init()==0 && MOTOR_VOFA_CHANNEL_COUNT==8);
+    CHECK(pmsm_init()==0 && init_order==3 && adc_callback && !enabled);
+    CHECK(pmsm_init()==-2); /* 不允许重复初始化清除故障或重新对齐。 */
+    pmsm_init_poll();CHECK(pmsm_init_monitor.state==PMSM_INIT_WAIT_SAMPLES && !enabled);
     CHECK(command("ENABLE,1\r")==-3 && !enabled);
-    CHECK(pmsm_current_monitor.inhibit_faults!=0);
-    fresh();frame(false);frame(false);pmsm_current_ctrl_poll();CHECK(!enabled); /* 未就绪请求不排队。 */
+    CHECK(command("STOP\r")==0);fresh();frame(false);frame(false);
+    CHECK(pmsm_init_monitor.state==PMSM_INIT_CANCELLED && !enabled);
+    for(i=0;i<10;++i)frame(false);CHECK(!enabled); /* STOP不能延后自动重启准备。 */
+    CHECK(pmsm_prepare()==0);frame(false);CHECK(enabled);
     CHECK(command("SET,CURRENT_MA,1500\r")==-1);
-    CHECK(command("SET,CURRENT_MA,500\r")==0);
-    CHECK(command("ENABLE,1\r")==0 && enabled);
+    CHECK(command("SET,CURRENT_MA,500\r")==-3);
     CHECK(command("ENABLE,1\r")==-2);
+    CHECK(command("STOP\r")==0 && !enabled); /* 升流中取消后不会自动重新对齐。 */
+    for(i=0;i<20;++i)frame(true);CHECK(!enabled);
+    CHECK(pmsm_prepare()==0);frame(true);CHECK(enabled);
     noise_period=1000; /* 50ms一次，约0.4%的滤波采样越界。 */
     /* 量化边界每20ms跳1个编码器计数：转子基本静止，不能反复清空200ms稳定计时。 */
     for(i=0;i<40000 && pmsm_current_monitor.state==PMSM_CURRENT_ALIGNING;++i) {
         if(i%400==0)phase=phase==3999 ? 0 : 3999;
         frame(true);
     }
-    CHECK(pmsm_current_monitor.state==PMSM_CURRENT_RUNNING && enabled);
+    CHECK(pmsm_current_monitor.state==PMSM_CURRENT_ALIGN_RELEASING && enabled);
+    CHECK(pmsm_current_monitor.id_ref_ma==MOTOR_CURRENT_ALIGN_CURRENT_MA);
+    /* STOP在降流阶段也必须取消准备，不留下可运行零点。 */
+    CHECK(command("STOP\r")==0 && !enabled && !pmsm_current_monitor.aligned);
+    CHECK(command("ENABLE,1\r")==-3 && !enabled);
+    prepare_to_ready();
+    CHECK(encoder_resets==1 && phase==0 && pmsm_current_monitor.speed_counts_s==0);
+    CHECK(pmsm_current_monitor.offset_deg==0 && pmsm_current_monitor.iq_ref_ma==0);
     CHECK(pmsm_current_monitor.alignment_window_bad_ticks>0);
     CHECK(pmsm_current_monitor.alignment_window_good_percent>=MOTOR_CURRENT_ALIGN_WINDOW_GOOD_PERCENT);
     CHECK(pmsm_current_monitor.alignment_final_good_ticks>=200);
@@ -138,6 +176,8 @@ int main(void) {
     noise_period=0;
     CHECK(pmsm_current_monitor.alignment_best_ticks>=4000 && pmsm_current_monitor.alignment_motion_resets==0);
     CHECK(pmsm_current_monitor.offset_deg>=0 && pmsm_current_monitor.offset_deg<360);
+    CHECK(command("SET,CURRENT_MA,500\r")==0);
+    CHECK(command("ENABLE,1\r")==0 && enabled && pmsm_current_monitor.state==PMSM_CURRENT_RUNNING);
     count=pmsm_current_monitor.updates;
     for(i=0;i<12000;++i)frame(true);
     CHECK(pmsm_current_monitor.updates==count+12000);
@@ -163,6 +203,7 @@ int main(void) {
     CHECK(pmsm_current_monitor.id_ref_ma==0 && pmsm_current_monitor.iq_ref_ma==0);
     sample.current_u_ma=sample.current_v_ma=sample.current_w_ma=0;fresh();
     CHECK(command("ENABLE,1\r")==0);frame(true);
+    CHECK(encoder_resets==1 && pmsm_current_monitor.state==PMSM_CURRENT_RUNNING);
     sample.current_u_ma=-MOTOR_PROTECT_PHASE_LIMIT_MA-1;frame(false);
     CHECK(!enabled && (pmsm_current_monitor.faults&PMSM_FAULT_OVERCURRENT));
     CHECK(command("ENABLE,1\r")==-4);
@@ -193,7 +234,7 @@ int main(void) {
     frame(false);frame(false);zero_and_clear();CHECK(command("ENABLE,1\r")==0);
     cycle_step=30;frame(false);
     CHECK(!enabled && (pmsm_current_monitor.faults&PMSM_CURRENT_TIMING_FAULT));
-    zero_and_clear();CHECK(command("ENABLE,1\r")==0);
+    zero_and_clear();restart_alignment();
     /* 电流正常但位置持续漂移时，仍须超时关断，不能靠放宽速度阈值绕过对齐。 */
     for(i=0;i<65000 && enabled;++i) {
         if(i%20==0)phase=(phase+1)%MOTOR_ABZ_COUNTS_PER_REV;
@@ -201,20 +242,50 @@ int main(void) {
     }
     CHECK(!enabled && (pmsm_current_monitor.faults&PMSM_CURRENT_ALIGN_POSITION_FAULT));
     CHECK(pmsm_current_monitor.alignment_motion_resets>0);
-    zero_and_clear();CHECK(command("ENABLE,1\r")==0);
+    zero_and_clear();restart_alignment();
     noise_period=100; /* 约4%越界，超过99%合格比例，不能完成对齐。 */
     for(i=0;i<65000 && enabled;++i)frame(true);
     CHECK(!enabled && (pmsm_current_monitor.faults&PMSM_CURRENT_ALIGN_CURRENT_FAULT));
     noise_period=0;
-    zero_and_clear();CHECK(command("ENABLE,1\r")==0);
+    zero_and_clear();restart_alignment();
     sample.current_u_ma=sample.current_v_ma=sample.current_w_ma=0;
     for(i=0;i<65000 && enabled;++i)frame(false);
     CHECK(!enabled && (pmsm_current_monitor.faults&PMSM_CURRENT_ALIGN_FAULT));
     CHECK(pmsm_current_monitor.faults&PMSM_CURRENT_ALIGN_CURRENT_FAULT);
-    zero_and_clear();cycles+=10000;motor_vofa_poll();motor_vofa_poll();
+    zero_and_clear();
+    /* 普通停机后手动转轴，只要QEI持续计数，零点仍有效，不清零也不重对齐。 */
+    count=encoder_resets;phase=123;for(i=0;i<80;++i)frame(false);
+    CHECK(pmsm_is_ready() && command("ENABLE,1\r")==0);
+    CHECK(pmsm_current_monitor.state==PMSM_CURRENT_RUNNING && encoder_resets==count);
+    CHECK(command("STOP\r")==0);
+    CHECK(encoder_reset()==0);frame(false);frame(false);
+    CHECK(!pmsm_is_ready() && !pmsm_current_monitor.aligned);
+    CHECK(command("ENABLE,1\r")==-3 && !enabled);
+    for(i=0;i<100;++i)frame(false);CHECK(!enabled); /* 零点失效不自动给电机通电。 */
+    prepare_to_ready();
+    CHECK(command("ENABLE,1\r")==0);
+    ++generation;phase=200;frame(false); /* 运行中发生外部QEI重置。 */
+    CHECK(!enabled && !pmsm_current_monitor.aligned && (pmsm_current_monitor.faults&PMSM_FAULT_ENCODER));
+    zero_and_clear();restart_alignment();
+    for(i=0;i<65000 && pmsm_current_monitor.state==PMSM_CURRENT_ALIGNING;++i)frame(true);
+    CHECK(pmsm_current_monitor.state==PMSM_CURRENT_ALIGN_RELEASING);
+    sample.current_u_ma=1000;sample.current_v_ma=-500;sample.current_w_ma=-500;
+    for(i=0;i<45000 && enabled;++i)frame(false); /* 实际电流不回零，降流超时。 */
+    CHECK(!enabled && (pmsm_current_monitor.faults&PMSM_CURRENT_ALIGN_CURRENT_FAULT));
+    zero_and_clear();restart_alignment();reset_result=-1;
+    for(i=0;i<110000 && pmsm_current_monitor.state!=PMSM_CURRENT_FAULT;++i)frame(true);
+    CHECK(!enabled && !pmsm_current_monitor.aligned && (pmsm_current_monitor.faults&PMSM_FAULT_ENCODER));
+    reset_result=0;zero_and_clear();restart_alignment();inhibit_finish=true;
+    for(i=0;i<110000 && pmsm_current_monitor.state!=PMSM_CURRENT_ALIGN_COMPLETE;++i)frame(true);
+    CHECK(!enabled && pmsm_current_monitor.state==PMSM_CURRENT_ALIGN_COMPLETE);
+    for(i=0;i<20;++i)frame(true);
+    CHECK(!pmsm_is_ready() && !pmsm_current_monitor.aligned && !pmsm_current_monitor.faults);
+    inhibit_finish=false;frame(true);
+    CHECK(pmsm_is_ready() && !enabled);
+    cycles+=10000;motor_vofa_poll();motor_vofa_poll();
     CHECK(tx_size && tx_size%36==0);
     for(i=0;i<tx_size;i+=36)CHECK(tx[i+32]==0 && tx[i+33]==0 && tx[i+34]==0x80 && tx[i+35]==0x7f);
     CHECK(pwm_commits>30000);
-    puts("PASS current loop: real FOC/PI/protection/protocol, alignment, signed Iq tracking, 20kHz frame accounting, STOP, faults/clear, watchdog, budget, alignment timeout, 8-channel JustFloat");
+    puts("PASS startup preparation: 2A alignment/release/encoder zero/READY, repeated ENABLE without alignment, cancel/retry, FOC/PI/protection/protocol, signed Iq, watchdog, budget, timeout, 8-channel JustFloat");
     return 0;
 }
