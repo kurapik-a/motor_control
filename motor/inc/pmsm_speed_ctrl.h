@@ -9,6 +9,7 @@ typedef struct {
     bool speed_mode, running, feedback_valid, current_limited;
     uint32_t updates;
     float target_counts_s;
+    float reference_counts_s; /* 规划后的速度目标，位置模式下为位置PI+速度前馈。 */
     float raw_counts_s, feedback_counts_s;
     float iq_ref_ma;
 } pmsm_speed_status_t;

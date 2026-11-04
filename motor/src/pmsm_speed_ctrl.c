@@ -5,6 +5,7 @@
 #include "pmsm_speed_ctrl.h"
 #include "motor_config.h"
 #include "pid.h"
+#include "pmsm_trajectory.h"
 #include "hpm_interrupt.h"
 #include "hpm_csr_drv.h"
 #include <float.h>
@@ -46,7 +47,9 @@ void pmsm_speed_ctrl_reset_feedback(void)
 int pmsm_speed_ctrl_step(void)
 {
     if (!pmsm_speed_monitor.speed_mode || !pmsm_speed_monitor.running || !pmsm_speed_monitor.feedback_valid) return -1;
-    if (pmsm_pi_step(&speed_pi, pmsm_speed_monitor.target_counts_s, pmsm_speed_monitor.feedback_counts_s)) return -1;
+    pmsm_speed_monitor.reference_counts_s = pmsm_trajectory_monitor.mode == PMSM_TRAJECTORY_SPEED ?
+        pmsm_trajectory_monitor.speed_counts_s : pmsm_speed_monitor.target_counts_s;
+    if (pmsm_pi_step(&speed_pi, pmsm_speed_monitor.reference_counts_s, pmsm_speed_monitor.feedback_counts_s)) return -1;
     pmsm_speed_monitor.iq_ref_ma = speed_pi.out;
     pmsm_speed_monitor.current_limited = speed_pi.limited;
     ++pmsm_speed_monitor.updates;
@@ -81,6 +84,8 @@ void pmsm_speed_ctrl_stop(void)
 {
     pmsm_pi_reset(&speed_pi);
     pmsm_speed_monitor.running = false;
+    pmsm_trajectory_reset(0, 0);
+    pmsm_speed_monitor.reference_counts_s = 0;
     pmsm_speed_monitor.target_counts_s = 0;
     pmsm_speed_monitor.iq_ref_ma = 0;
     pmsm_speed_monitor.current_limited = false;

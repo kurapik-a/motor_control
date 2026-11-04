@@ -25,81 +25,92 @@
 #define MOTOR_CURRENT_Q_VOLTAGE_LIMIT_TICKS 7000.0f /* q轴PI电压输出绝对值上限，PWM计数。 */
 
 /* ===== 2. 电机、QEI编码器与机械换算 ===== */
-#define MOTOR_MAX_SPEED_RPS 20.0f                    /* 电机轴实际速度保护上限，r/s；下方保护门限引用。 */
-#define MOTOR_POLE_PAIRS 14u                         /* 14 极对=28 极 */
+#define MOTOR_MAX_SPEED_RPS 20.0f /* 电机轴实际速度保护上限，r/s；下方保护门限引用。 */
+#define MOTOR_POLE_PAIRS 14u      /* 14 极对=28 极 */
 /* 编码器方向同时作用于累计位置、电角度和速度，-1 沿用原调通工程。 */
 #ifndef MOTOR_ENCODER_DIRECTION
 #define MOTOR_ENCODER_DIRECTION (-1) /* -1=反向，1=硬件计数方向。 */
 #endif
-#define MOTOR_ABZ_COUNTS_PER_REV 4000u               /* ABZ 编码器轴一圈的实际计数，已含四倍频；不是输出轴一圈计数。 */
-#define MOTOR_SPEED_REDUCTION_RATIO 7.75f            /* 电机轴/输出轴转速比 */
+#define MOTOR_ABZ_COUNTS_PER_REV 4000u    /* ABZ 编码器轴一圈的实际计数，已含四倍频；不是输出轴一圈计数。 */
+#define MOTOR_SPEED_REDUCTION_RATIO 7.75f /* 电机轴/输出轴转速比 */
 
 /* ===== 3. 电流闭环调度、给定及滤波 ===== */
-#define MOTOR_CURRENT_CTRL_DEFAULT_IQ_MA 0.0f /* 对齐后默认零转矩；SET,CURRENT_MA设置Iq。 */
+#define MOTOR_CURRENT_CTRL_DEFAULT_IQ_MA 0.0f     /* 对齐后默认零转矩；SET,CURRENT_MA设置Iq。 */
 #define MOTOR_CURRENT_CTRL_MAX_COMMAND_MA 1000.0f /* 初次闭环调试的正负Iq命令限幅。 */
-#define MOTOR_CURRENT_CTRL_SLEW_MA_S 1600.0f /* Id退出对齐及Iq目标缓升速率，mA/s。 */
-#define MOTOR_PWM_FREQUENCY_HZ 20000u   /* PWM及电流环频率，20000Hz对应每拍50us。 */
-#define MOTOR_SPEED_ESTIMATE_HZ 1000u /* 主循环标称测速频率，Hz；速度按实际经过时间计算。 */
-#define MOTOR_CURRENT_FILTER_ALPHA 0.2f /* 电流一阶低通系数，范围(0,1]，1=不滤波。 */
-#define MOTOR_SPEED_FILTER_ALPHA 0.1f /* 标称测速周期的低通系数，范围(0,1]。 */
+#define MOTOR_CURRENT_CTRL_SLEW_MA_S 1600.0f      /* Id退出对齐及Iq目标缓升速率，mA/s。 */
+#define MOTOR_PWM_FREQUENCY_HZ 20000u             /* PWM及电流环频率，20000Hz对应每拍50us。 */
+#define MOTOR_SPEED_ESTIMATE_HZ 1000u             /* 主循环标称测速频率，Hz；速度按实际经过时间计算。 */
+#define MOTOR_CURRENT_FILTER_ALPHA 0.2f           /* 电流一阶低通系数，范围(0,1]，1=不滤波。 */
+#define MOTOR_SPEED_FILTER_ALPHA 0.1f             /* 标称测速周期的低通系数，范围(0,1]。 */
 
 /* ===== 速度环：内部给定/反馈均为电机轴编码器计数/秒 ===== */
 #define MOTOR_SPEED_LOOP_HZ 1000u
 #define MOTOR_SPEED_KP 0.8058608f
 #define MOTOR_SPEED_KI 0.008058608f
 #define MOTOR_SPEED_CTRL_MAX_COUNTS_S (12.9166667f * MOTOR_ABZ_COUNTS_PER_REV) /* 电机轴775rpm；当前减速比下为输出轴100rpm。 */
-#define MOTOR_SPEED_CTRL_IQ_LIMIT_MA 1000.0f /* 速度PI自身的正负输出上限。 */
+#define MOTOR_SPEED_CTRL_IQ_LIMIT_MA 1000.0f                                   /* 速度PI自身的正负输出上限。 */
 /* 位置环沿用原工程每外环拍输出的PI尺度，随后乘外环Hz生成计数/秒。 */
-#define MOTOR_POSITION_KP 0.00205f /* 原工程0.0205；当前级联先用其1/10，须上板整定。 */
+#ifndef MOTOR_POSITION_KP
+#define MOTOR_POSITION_KP 0.0155f /* 保留上板整定值；离线模型可独立覆盖增益。 */
+#endif
 #define MOTOR_POSITION_KI 0.0f
-#define MOTOR_POSITION_OUTPUT_LIMIT_COUNTS_PER_TICK 10.0f
+#define MOTOR_POSITION_OUTPUT_LIMIT_COUNTS_PER_TICK 25.0f                      /*25*周期/4000*60/7.75*/
 #define MOTOR_POSITION_MAX_COMMAND_COUNTS (1000.0f * MOTOR_ABZ_COUNTS_PER_REV) /* 绝对目标±1000电机轴转。 */
+/* ===== 轨迹规划：1kHz，内部单位为电机轴编码器计数 =====
+ * 沿用原工程速度/加速度/加加速度约束；加速度先取较缓初值，须按负载整定。
+ * 位置最大规划速度小于位置环速度上限，为反馈纠偏预留余量。
+ * 速度模式的最终速度范围仍由MOTOR_SPEED_CTRL_MAX_COUNTS_S决定。 */
+#define MOTOR_TRAJECTORY_POSITION_MAX_COUNTS_S (5.0f * MOTOR_ABZ_COUNTS_PER_REV) /*rps * 60 / 7.75*/
+#define MOTOR_TRAJECTORY_ACCEL_COUNTS_S2 (5.0f * MOTOR_ABZ_COUNTS_PER_REV)       /*加减速快慢*/
+#ifndef MOTOR_TRAJECTORY_JERK_COUNTS_S3
+#define MOTOR_TRAJECTORY_JERK_COUNTS_S3 (20.0f * MOTOR_ABZ_COUNTS_PER_REV) /*加速度变化快慢*/
+#endif
 #if MOTOR_SPEED_LOOP_HZ == 0 || MOTOR_PWM_FREQUENCY_HZ % MOTOR_SPEED_LOOP_HZ != 0
 #error "Current-loop frequency must be divisible by speed-loop frequency"
 #endif
 
 /* ===== 4. 对齐专用：进入RUNNING后不再执行 ===== */
-#define MOTOR_ALIGN_START_ELECTRICAL_DEG 90.0f /* 对齐初始电角度，单位电角度。 */
+#define MOTOR_ALIGN_START_ELECTRICAL_DEG 90.0f         /* 对齐初始电角度，单位电角度。 */
 #define MOTOR_CURRENT_ALIGN_VOLTAGE_LIMIT_TICKS 500.0f /* 对齐期独立总限幅，单位为原SVPWM电压计数。 */
-#define MOTOR_CURRENT_ALIGN_CURRENT_MA 1000.0f /* 上电对齐d轴电流，mA。 */
-#define MOTOR_CURRENT_ALIGN_RELEASE_TIMEOUT_MS 2000u /* 合格后降流并等待实际电流回零的最长时间。 */
+#define MOTOR_CURRENT_ALIGN_CURRENT_MA 1000.0f         /* 上电对齐d轴电流，mA。 */
+#define MOTOR_CURRENT_ALIGN_RELEASE_TIMEOUT_MS 2000u   /* 合格后降流并等待实际电流回零的最长时间。 */
 #define MOTOR_CURRENT_ALIGN_RAMP_MS 500u
-#define MOTOR_CURRENT_ALIGN_SWEEP_MS 500u /* 对齐角由90度缓移到0度。 */
-#define MOTOR_CURRENT_ALIGN_STABLE_MS 200u /* 电流合格比例与位置静止判定的窗口时长。 */
-#define MOTOR_CURRENT_ALIGN_WINDOW_GOOD_PERCENT 99u /* 稳定窗口内电流合格比例；过流保护仍逐拍执行。 */
-#define MOTOR_CURRENT_ALIGN_FINAL_GOOD_MS 10u /* 完成对齐前须连续电流合格的末段时长。 */
+#define MOTOR_CURRENT_ALIGN_SWEEP_MS 500u                /* 对齐角由90度缓移到0度。 */
+#define MOTOR_CURRENT_ALIGN_STABLE_MS 200u               /* 电流合格比例与位置静止判定的窗口时长。 */
+#define MOTOR_CURRENT_ALIGN_WINDOW_GOOD_PERCENT 99u      /* 稳定窗口内电流合格比例；过流保护仍逐拍执行。 */
+#define MOTOR_CURRENT_ALIGN_FINAL_GOOD_MS 10u            /* 完成对齐前须连续电流合格的末段时长。 */
 #define MOTOR_CURRENT_ALIGN_POSITION_TOLERANCE_COUNTS 2u /* 稳定窗口允许的编码器计数摆动，含量化边界±1计数。 */
 #define MOTOR_CURRENT_ALIGN_TIMEOUT_MS 3000u
-#define MOTOR_CURRENT_ALIGN_ERROR_MA 200.0f /* Id误差及|Iq|门限；不是相电流过流门限。 */
+#define MOTOR_CURRENT_ALIGN_ERROR_MA 200.0f                                       /* Id误差及|Iq|门限；不是相电流过流门限。 */
 #define MOTOR_CURRENT_ALIGN_MAX_SPEED_COUNTS_S (0.02f * MOTOR_ABZ_COUNTS_PER_REV) /* 稳定窗口平均速度上限，不用单拍差分判静止。 */
 
 /* ===== 5. ADC电流比例、零偏与PWM时序 ===== */
-#define MOTOR_ADC_CONVERSION_TIMEOUT_US 10u /* 预计PWM触发到双路DMA完整的允许时间，微秒；必须小于PWM周期。 */
-#define MOTOR_ADC_TRIGGER_GUARD_TICKS 1000u /* 距ADC比较点过近时延后重臂，单位PWM时钟计数。 */
-#define MOTOR_ADC_REFERENCE_V 3.3f             /* ADC 参考电压，单位 V；参与电流码值到 mA 的换算。 */
+#define MOTOR_ADC_CONVERSION_TIMEOUT_US 10u     /* 预计PWM触发到双路DMA完整的允许时间，微秒；必须小于PWM周期。 */
+#define MOTOR_ADC_TRIGGER_GUARD_TICKS 1000u     /* 距ADC比较点过近时延后重臂，单位PWM时钟计数。 */
+#define MOTOR_ADC_REFERENCE_V 3.3f              /* ADC 参考电压，单位 V；参与电流码值到 mA 的换算。 */
 #define MOTOR_ADC_EFFECTIVE_FULL_SCALE 65535.0f /* 当前保留完整16位ADC码；换算比例与65535配套。 */
-#define MOTOR_CURRENT_AMPLIFIER_GAIN 10.0f     /* 电流采样放大倍数，无量纲；需与板上采样电路一致。 */
-#define MOTOR_SHUNT_RESISTANCE_OHM 0.001f      /* 电流采样电阻，单位 Ω；0.001 Ω=1 mΩ。 */
-#define MOTOR_ADC_CURRENT_SAMPLE_CYCLES 15u    /* 电流 ADC 的采样时间设置，单位 ADC 时钟周期。 */
-#define MOTOR_ADC_AUX_SAMPLE_CYCLES 20u        /* 母线/温度辅助 ADC 的采样时间设置，单位 ADC 时钟周期。 */
-#define MOTOR_ADC_CLOCK_DIVIDER 4u             /* 实际分频值，需核对 ADC 时钟范围 */
-#define MOTOR_CURRENT_OFFSET_SETTLE_MS 1000u   /* 上电关桥后，开始电流零偏标定前的等待时间，单位 ms。 */
-#define MOTOR_CURRENT_OFFSET_SAMPLES 256u      /* 每路电流零偏求平均的样本数；每次上电重新标定。 */
-#define MOTOR_CURRENT_OFFSET_INTERVAL_MS 1u    /* 零偏标定相邻样本的等待时间，单位 ms。 */
-#define MOTOR_PWM_DEADTIME_HALF_TICKS 200u     /* 驱动的半周期计数单位 */
-#define MOTOR_PWM_CURRENT_ISR_DELAY_TICKS 200u /* 不是 ADC/DMA 完成保证 */
-#define MOTOR_ADC_AUX_PERIOD_PRESCALE 22u      /* 母线/温度独立周期采样，沿用原工程：周期时基预分频2^22，不是Hz。 */
-#define MOTOR_ADC_AUX_PERIOD_COUNT 5u          /* 母线/温度周期计数5；200MHz时基下约104.86ms一次，不随20kHz电流采样更新。 */
+#define MOTOR_CURRENT_AMPLIFIER_GAIN 10.0f      /* 电流采样放大倍数，无量纲；需与板上采样电路一致。 */
+#define MOTOR_SHUNT_RESISTANCE_OHM 0.001f       /* 电流采样电阻，单位 Ω；0.001 Ω=1 mΩ。 */
+#define MOTOR_ADC_CURRENT_SAMPLE_CYCLES 15u     /* 电流 ADC 的采样时间设置，单位 ADC 时钟周期。 */
+#define MOTOR_ADC_AUX_SAMPLE_CYCLES 20u         /* 母线/温度辅助 ADC 的采样时间设置，单位 ADC 时钟周期。 */
+#define MOTOR_ADC_CLOCK_DIVIDER 4u              /* 实际分频值，需核对 ADC 时钟范围 */
+#define MOTOR_CURRENT_OFFSET_SETTLE_MS 1000u    /* 上电关桥后，开始电流零偏标定前的等待时间，单位 ms。 */
+#define MOTOR_CURRENT_OFFSET_SAMPLES 256u       /* 每路电流零偏求平均的样本数；每次上电重新标定。 */
+#define MOTOR_CURRENT_OFFSET_INTERVAL_MS 1u     /* 零偏标定相邻样本的等待时间，单位 ms。 */
+#define MOTOR_PWM_DEADTIME_HALF_TICKS 200u      /* 驱动的半周期计数单位 */
+#define MOTOR_PWM_CURRENT_ISR_DELAY_TICKS 200u  /* 不是 ADC/DMA 完成保证 */
+#define MOTOR_ADC_AUX_PERIOD_PRESCALE 22u       /* 母线/温度独立周期采样，沿用原工程：周期时基预分频2^22，不是Hz。 */
+#define MOTOR_ADC_AUX_PERIOD_COUNT 5u           /* 母线/温度周期计数5；200MHz时基下约104.86ms一次，不随20kHz电流采样更新。 */
 /* ===== 6. 运行保护：每个新ADC帧检查，故障关桥锁存 ===== */
-#define MOTOR_CURRENT_CTRL_BUDGET_US 25u /* 新帧控制计算到PWM提交的最大预算。 */
+#define MOTOR_CURRENT_CTRL_BUDGET_US 25u    /* 新帧控制计算到PWM提交的最大预算。 */
 #define MOTOR_CURRENT_CTRL_WATCHDOG_US 100u /* PWM独立中断检查ADC控制心跳。 */
-#define MOTOR_BUS_OVERVOLTAGE_ADC 34044u       /* ADC 原始码，非直接电压 */
+#define MOTOR_BUS_OVERVOLTAGE_ADC 34044u    /* ADC 原始码，非直接电压 */
 #ifndef MOTOR_BUS_UNDERVOLTAGE_ADC
-#define MOTOR_BUS_UNDERVOLTAGE_ADC 0u          /* 默认0：无有效欠压门限；仍检查辅助数据有效性。 */
+#define MOTOR_BUS_UNDERVOLTAGE_ADC 0u /* 默认0：无有效欠压门限；仍检查辅助数据有效性。 */
 #endif
-#define MOTOR_TEMP_MAX_ADC 55893u              /* 温度 ADC 原始码上限；采样码大于此值置故障，不是直接摄氏温度。 */
+#define MOTOR_TEMP_MAX_ADC 55893u /* 温度 ADC 原始码上限；采样码大于此值置故障，不是直接摄氏温度。 */
 #ifndef MOTOR_TEMP_MIN_ADC
-#define MOTOR_TEMP_MIN_ADC 0u                  /* 温度 ADC 原始码下限；默认0：无有效下限。 */
+#define MOTOR_TEMP_MIN_ADC 0u /* 温度 ADC 原始码下限；默认0：无有效下限。 */
 #endif
 
 /* pmsm_protect.c已接入电流闭环，ADC驱动仍保留自身错误检查。 */
@@ -118,16 +129,16 @@
 #ifndef MOTOR_PROTECT_TEMP_ENABLE
 #define MOTOR_PROTECT_TEMP_ENABLE 1 /* 阈值使用上方MOTOR_TEMP_*，仍为ADC码，非摄氏度。 */
 #endif
-#define MOTOR_PROTECT_PHASE_LIMIT_MA 3000.0f /* 原始U/V/W绝对值过流门限，mA。 */
-#define MOTOR_PROTECT_DQ_LIMIT_MA 3000.0f /* Id/Iq绝对值门限。 */
+#define MOTOR_PROTECT_PHASE_LIMIT_MA 3000.0f                                                /* 原始U/V/W绝对值过流门限，mA。 */
+#define MOTOR_PROTECT_DQ_LIMIT_MA 3000.0f                                                   /* Id/Iq绝对值门限。 */
 #define MOTOR_PROTECT_SPEED_LIMIT_COUNTS_S (MOTOR_MAX_SPEED_RPS * MOTOR_ABZ_COUNTS_PER_REV) /* 电机轴20r/s，当前AB每圈4000计数。 */
-#define MOTOR_PROTECT_CURRENT_MAX_AGE_US 100u /* 电流数据最大年龄，微秒。 */
-#define MOTOR_PROTECT_ENCODER_MAX_AGE_MS 5u /* 编码器数据最大年龄，毫秒。 */
-#define MOTOR_PROTECT_AUX_MAX_AGE_MS 500u /* 母线/温度最大年龄，毫秒；应大于独立采样周期。 */
-#if (MOTOR_PROTECT_PHASE_ENABLE != 0 && MOTOR_PROTECT_PHASE_ENABLE != 1) || \
-    (MOTOR_PROTECT_DQ_ENABLE != 0 && MOTOR_PROTECT_DQ_ENABLE != 1) || \
+#define MOTOR_PROTECT_CURRENT_MAX_AGE_US 100u                                               /* 电流数据最大年龄，微秒。 */
+#define MOTOR_PROTECT_ENCODER_MAX_AGE_MS 5u                                                 /* 编码器数据最大年龄，毫秒。 */
+#define MOTOR_PROTECT_AUX_MAX_AGE_MS 500u                                                   /* 母线/温度最大年龄，毫秒；应大于独立采样周期。 */
+#if (MOTOR_PROTECT_PHASE_ENABLE != 0 && MOTOR_PROTECT_PHASE_ENABLE != 1) ||     \
+    (MOTOR_PROTECT_DQ_ENABLE != 0 && MOTOR_PROTECT_DQ_ENABLE != 1) ||           \
     (MOTOR_PROTECT_ENCODER_ENABLE != 0 && MOTOR_PROTECT_ENCODER_ENABLE != 1) || \
-    (MOTOR_PROTECT_BUS_ENABLE != 0 && MOTOR_PROTECT_BUS_ENABLE != 1) || \
+    (MOTOR_PROTECT_BUS_ENABLE != 0 && MOTOR_PROTECT_BUS_ENABLE != 1) ||         \
     (MOTOR_PROTECT_TEMP_ENABLE != 0 && MOTOR_PROTECT_TEMP_ENABLE != 1)
 #error "Protection enable switches must be 0 or 1"
 #endif

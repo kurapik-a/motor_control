@@ -9,7 +9,8 @@ typedef struct {
     bool position_mode, running, feedback_valid, target_pending, speed_limited;
     uint32_t updates;
     int32_t position_count;
-    float target_count, error_count, speed_ref_counts_s;
+    float target_count, reference_count, error_count, speed_ref_counts_s;
+    float feedforward_counts_s;
 } pmsm_position_status_t;
 extern volatile pmsm_position_status_t pmsm_position_monitor;
 int pmsm_position_ctrl_init(void);

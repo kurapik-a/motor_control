@@ -5,6 +5,7 @@
 #include "pmsm_position_ctrl.h"
 #include "motor_config.h"
 #include "pid.h"
+#include "pmsm_trajectory.h"
 #include "hpm_interrupt.h"
 #include "hpm_csr_drv.h"
 #include <float.h>
@@ -50,12 +51,21 @@ int pmsm_position_ctrl_set_target(float target_count)
 
 int pmsm_position_ctrl_step(void)
 {
+    float limit = MOTOR_POSITION_OUTPUT_LIMIT_COUNTS_PER_TICK * MOTOR_SPEED_LOOP_HZ;
+    float previous = position_pi.mem;
     if (!pmsm_position_monitor.position_mode || !pmsm_position_monitor.running || !pmsm_position_monitor.feedback_valid) return -1;
-    if (pmsm_pi_step(&position_pi, pmsm_position_monitor.target_count, (float)pmsm_position_monitor.position_count)) return -1;
-    pmsm_position_monitor.error_count = pmsm_position_monitor.target_count - (float)pmsm_position_monitor.position_count;
+    pmsm_position_monitor.reference_count = pmsm_trajectory_monitor.position_count;
+    pmsm_position_monitor.feedforward_counts_s = pmsm_trajectory_monitor.speed_counts_s;
+    if (pmsm_pi_step(&position_pi, pmsm_position_monitor.reference_count, (float)pmsm_position_monitor.position_count)) return -1;
+    pmsm_position_monitor.error_count = pmsm_position_monitor.reference_count - (float)pmsm_position_monitor.position_count;
     /* 原位置PI输出为计数/外环拍；周期换算属于控制律，不是显示单位转换。 */
-    pmsm_position_monitor.speed_ref_counts_s = position_pi.out * MOTOR_SPEED_LOOP_HZ;
+    pmsm_position_monitor.speed_ref_counts_s = position_pi.out * MOTOR_SPEED_LOOP_HZ + pmsm_position_monitor.feedforward_counts_s;
     pmsm_position_monitor.speed_limited = position_pi.limited;
+    if (pmsm_position_monitor.speed_ref_counts_s > limit) {
+        pmsm_position_monitor.speed_ref_counts_s = limit; pmsm_position_monitor.speed_limited = true; position_pi.mem = previous;
+    } else if (pmsm_position_monitor.speed_ref_counts_s < -limit) {
+        pmsm_position_monitor.speed_ref_counts_s = -limit; pmsm_position_monitor.speed_limited = true; position_pi.mem = previous;
+    }
     ++pmsm_position_monitor.updates;
     return 0;
 }
@@ -65,6 +75,8 @@ void pmsm_position_ctrl_start(void)
     pmsm_pi_reset(&position_pi);
     if (!pmsm_position_monitor.target_pending) pmsm_position_monitor.target_count = (float)pmsm_position_monitor.position_count;
     pmsm_position_monitor.speed_ref_counts_s = 0;
+    pmsm_position_monitor.reference_count = (float)pmsm_position_monitor.position_count;
+    pmsm_position_monitor.feedforward_counts_s = 0;
     pmsm_position_monitor.speed_limited = false;
     pmsm_position_monitor.running = true;
 }
@@ -76,6 +88,8 @@ void pmsm_position_ctrl_stop(void)
     pmsm_position_monitor.target_pending = false;
     pmsm_position_monitor.target_count = (float)pmsm_position_monitor.position_count;
     pmsm_position_monitor.error_count = pmsm_position_monitor.speed_ref_counts_s = 0;
+    pmsm_position_monitor.reference_count = (float)pmsm_position_monitor.position_count;
+    pmsm_position_monitor.feedforward_counts_s = 0;
     pmsm_position_monitor.speed_limited = false;
 }
 

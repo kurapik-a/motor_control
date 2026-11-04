@@ -5,6 +5,7 @@
 #include "pmsm_current_ctrl.h"
 #include "pmsm_speed_ctrl.h"
 #include "pmsm_position_ctrl.h"
+#include "pmsm_trajectory.h"
 #include "pid.h"
 #include "motor_config.h"
 #include "adc.h"
@@ -247,6 +248,7 @@ static void current_sample(const adc_data_t *sample, int status)
         }
     }
     if (pmsm_current_monitor.state == PMSM_CURRENT_RUNNING && pmsm_speed_monitor.speed_mode) {
+        if (speed_due && pmsm_trajectory_step()) { current_trip(PMSM_FAULT_NUMERIC); return; }
         if (speed_due && pmsm_position_monitor.position_mode) {
             if (pmsm_position_ctrl_step() || pmsm_speed_ctrl_set_target(pmsm_position_monitor.speed_ref_counts_s, iq_ref)) {
                 current_trip(PMSM_FAULT_NUMERIC); return;
@@ -397,6 +399,7 @@ int pmsm_current_ctrl_init(void)
     pmsm_protect_init(&protection);
     if (pmsm_speed_ctrl_init()) return -1;
     if (pmsm_position_ctrl_init()) return -1;
+    if (pmsm_trajectory_init()) return -1;
     reload = pwm_get_reload();
     id_pi.kp = MOTOR_CURRENT_D_KP; id_pi.ki = MOTOR_CURRENT_D_KI; id_pi.limit = MOTOR_CURRENT_D_VOLTAGE_LIMIT_TICKS;
     iq_pi.kp = MOTOR_CURRENT_Q_KP; iq_pi.ki = MOTOR_CURRENT_Q_KI; iq_pi.limit = MOTOR_CURRENT_Q_VOLTAGE_LIMIT_TICKS;
@@ -478,6 +481,10 @@ static int current_begin(bool alignment)
         pmsm_speed_ctrl_start();
         pmsm_position_ctrl_start();
         if (pmsm_position_monitor.position_mode) pmsm_speed_ctrl_set_target(0, 0);
+        pmsm_trajectory_reset((float)pmsm_position_monitor.position_count,
+            pmsm_speed_monitor.feedback_valid ? pmsm_speed_monitor.feedback_counts_s : 0);
+        if (pmsm_position_monitor.position_mode) pmsm_trajectory_set_position(pmsm_position_monitor.target_count);
+        else if (pmsm_speed_monitor.speed_mode) pmsm_trajectory_set_speed(pmsm_speed_monitor.target_counts_s);
     }
     id_ref = iq_ref = 0;
     if (alignment) { pmsm_current_monitor.aligned = false; command_iq = 0; }
@@ -596,13 +603,20 @@ int pmsm_current_ctrl_set_speed_counts_s(float speed_counts_s)
 {
     int result;
     uint32_t irq;
+    bool seed;
     if (!initialized || !cc_finite(speed_counts_s) || cc_abs(speed_counts_s) > MOTOR_SPEED_CTRL_MAX_COUNTS_S) return -1;
     irq = disable_global_irq(CSR_MSTATUS_MIE_MASK);
     if (pmsm_current_monitor.state == PMSM_CURRENT_FAULT) { restore_global_irq(irq); return -4; }
     if (!pmsm_current_monitor.aligned) { restore_global_irq(irq); return -3; }
     if (pmsm_current_monitor.state == PMSM_CURRENT_RUNNING && !pmsm_speed_monitor.running) pmsm_speed_ctrl_start();
+    seed = !pmsm_speed_monitor.speed_mode;
     result = pmsm_speed_ctrl_set_target(speed_counts_s, iq_ref);
-    if (!result) { command_iq = 0; pmsm_position_ctrl_select_direct(); }
+    if (!result) {
+        command_iq = 0; pmsm_position_ctrl_select_direct();
+        if (seed) pmsm_trajectory_reset((float)pmsm_position_monitor.position_count,
+            pmsm_speed_monitor.feedback_valid ? pmsm_speed_monitor.feedback_counts_s : 0);
+        result = pmsm_trajectory_set_speed(speed_counts_s);
+    }
     restore_global_irq(irq);
     return result;
 }
@@ -621,9 +635,12 @@ int pmsm_current_ctrl_set_position_counts(float position_count)
     if (!pmsm_position_monitor.position_mode) {
         if (pmsm_current_monitor.state == PMSM_CURRENT_RUNNING && !pmsm_speed_monitor.running) pmsm_speed_ctrl_start();
         if (pmsm_speed_ctrl_set_target(0, iq_ref)) { restore_global_irq(irq); return -1; }
+        pmsm_trajectory_reset((float)position,
+            pmsm_speed_monitor.feedback_valid ? pmsm_speed_monitor.feedback_counts_s : 0);
     }
     result = pmsm_position_ctrl_set_target(position_count);
     if (!result) {
+        result = pmsm_trajectory_set_position(position_count);
         command_iq = 0;
         if (pmsm_current_monitor.state == PMSM_CURRENT_RUNNING && !pmsm_position_monitor.running) pmsm_position_ctrl_start();
     }
