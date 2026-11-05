@@ -56,14 +56,15 @@
 #define MOTOR_POSITION_KI 0.0f
 #define MOTOR_POSITION_OUTPUT_LIMIT_COUNTS_PER_TICK 25.0f                      /*25*周期/4000*60/7.75*/
 #define MOTOR_POSITION_MAX_COMMAND_COUNTS (1000.0f * MOTOR_ABZ_COUNTS_PER_REV) /* 绝对目标±1000电机轴转。 */
-/* ===== 轨迹规划：1kHz，内部单位为电机轴编码器计数 =====
+/* ===== 轨迹规划上电默认值：1kHz，内部单位为电机轴编码器计数 =====
+ * init载入结构体，停机后可用pmsm_trajectory_set_config整组更新；不写入Flash。
  * 沿用原工程速度/加速度/加加速度约束；加速度先取较缓初值，须按负载整定。
  * 位置最大规划速度小于位置环速度上限，为反馈纠偏预留余量。
  * 速度模式的最终速度范围仍由MOTOR_SPEED_CTRL_MAX_COUNTS_S决定。 */
 #define MOTOR_TRAJECTORY_POSITION_MAX_COUNTS_S (5.0f * MOTOR_ABZ_COUNTS_PER_REV) /*rps * 60 / 7.75*/
 #define MOTOR_TRAJECTORY_ACCEL_COUNTS_S2 (5.0f * MOTOR_ABZ_COUNTS_PER_REV)       /*加减速快慢*/
 #ifndef MOTOR_TRAJECTORY_JERK_COUNTS_S3
-#define MOTOR_TRAJECTORY_JERK_COUNTS_S3 (20.0f * MOTOR_ABZ_COUNTS_PER_REV) /*加速度变化快慢*/
+#define MOTOR_TRAJECTORY_JERK_COUNTS_S3 (50.0f * MOTOR_ABZ_COUNTS_PER_REV) /*加速度变化快慢*/
 #endif
 #if MOTOR_SPEED_LOOP_HZ == 0 || MOTOR_PWM_FREQUENCY_HZ % MOTOR_SPEED_LOOP_HZ != 0
 #error "Current-loop frequency must be divisible by speed-loop frequency"

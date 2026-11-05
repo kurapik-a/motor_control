@@ -4,6 +4,9 @@
 #endif
 #include "pmsm_trajectory.h"
 #include "motor_config.h"
+#include "pwm.h"
+#include "hpm_interrupt.h"
+#include "hpm_csr_drv.h"
 #include <float.h>
 #include <string.h>
 
@@ -14,8 +17,44 @@ static float anchor_p, anchor_v, anchor_a, carry, dt;
 static uint32_t ticks;
 static unsigned segment, segments, stage;
 static bool dirty;
+static bool initialized;
+static pmsm_trajectory_config_t trajectory_config;
 MOTOR_INLINE float trajectory_abs(float x) { return x < 0 ? -x : x; }
 MOTOR_INLINE bool trajectory_finite(float x) { return x >= -FLT_MAX && x <= FLT_MAX; }
+MOTOR_INLINE bool trajectory_config_valid(const pmsm_trajectory_config_t *config)
+{
+    return config->position_max_speed_counts_s > 0 && trajectory_finite(config->position_max_speed_counts_s) &&
+        config->position_max_speed_counts_s <= MOTOR_POSITION_OUTPUT_LIMIT_COUNTS_PER_TICK * MOTOR_SPEED_LOOP_HZ &&
+        config->position_max_speed_counts_s <= MOTOR_SPEED_CTRL_MAX_COUNTS_S &&
+        config->max_accel_counts_s2 > 0 && trajectory_finite(config->max_accel_counts_s2) &&
+        config->max_jerk_counts_s3 > 0 && trajectory_finite(config->max_jerk_counts_s3);
+}
+
+int pmsm_trajectory_set_config(const pmsm_trajectory_config_t *config)
+{
+    pmsm_trajectory_config_t next;
+    uint32_t irq;
+    if (!config) return PMSM_TRAJECTORY_INVALID_CONFIG;
+    next = *config;
+    if (!trajectory_config_valid(&next)) return PMSM_TRAJECTORY_INVALID_CONFIG;
+    irq = disable_global_irq(CSR_MSTATUS_MIE_MASK);
+    if (!initialized) { restore_global_irq(irq); return PMSM_TRAJECTORY_NOT_INITIALIZED; }
+    if (pwm_is_enabled()) { restore_global_irq(irq); return PMSM_TRAJECTORY_BUSY; }
+    trajectory_config = next;
+    restore_global_irq(irq);
+    return PMSM_TRAJECTORY_OK;
+}
+
+int pmsm_trajectory_get_config(pmsm_trajectory_config_t *config)
+{
+    uint32_t irq;
+    if (!config) return PMSM_TRAJECTORY_INVALID_CONFIG;
+    irq = disable_global_irq(CSR_MSTATUS_MIE_MASK);
+    if (!initialized) { restore_global_irq(irq); return PMSM_TRAJECTORY_NOT_INITIALIZED; }
+    *config = trajectory_config;
+    restore_global_irq(irq);
+    return PMSM_TRAJECTORY_OK;
+}
 
 /* 有界迭代，避免IRQ调用库中的double数学函数或Flash代码。 */
 static float trajectory_root(float x, bool cube) MOTOR_RAMFUNC;
@@ -47,10 +86,10 @@ static void trajectory_velocity(float target, unsigned next_stage)
 {
     float delta = target - pmsm_trajectory_monitor.speed_counts_s;
     float amount = trajectory_abs(delta);
-    float tj = MOTOR_TRAJECTORY_ACCEL_COUNTS_S2 / MOTOR_TRAJECTORY_JERK_COUNTS_S3;
-    float ta = amount / MOTOR_TRAJECTORY_ACCEL_COUNTS_S2 - tj;
-    float j = delta < 0 ? -MOTOR_TRAJECTORY_JERK_COUNTS_S3 : MOTOR_TRAJECTORY_JERK_COUNTS_S3;
-    if (ta < 0) { tj = trajectory_root(amount / MOTOR_TRAJECTORY_JERK_COUNTS_S3, false); ta = 0; }
+    float tj = trajectory_config.max_accel_counts_s2 / trajectory_config.max_jerk_counts_s3;
+    float ta = amount / trajectory_config.max_accel_counts_s2 - tj;
+    float j = delta < 0 ? -trajectory_config.max_jerk_counts_s3 : trajectory_config.max_jerk_counts_s3;
+    if (ta < 0) { tj = trajectory_root(amount / trajectory_config.max_jerk_counts_s3, false); ta = 0; }
     duration[0] = duration[2] = tj; duration[1] = ta;
     jerk[0] = j; jerk[1] = 0; jerk[2] = -j;
     segment = 0; segments = 3; stage = next_stage;
@@ -63,8 +102,8 @@ static void trajectory_position(void)
 {
     float delta = pmsm_trajectory_monitor.target_count - pmsm_trajectory_monitor.position_count;
     float distance = trajectory_abs(delta);
-    float vmax = MOTOR_TRAJECTORY_POSITION_MAX_COUNTS_S;
-    float a = MOTOR_TRAJECTORY_ACCEL_COUNTS_S2, jmax = MOTOR_TRAJECTORY_JERK_COUNTS_S3;
+    float vmax = trajectory_config.position_max_speed_counts_s;
+    float a = trajectory_config.max_accel_counts_s2, jmax = trajectory_config.max_jerk_counts_s3;
     float tj = a / jmax, ta = vmax / a - tj, tv;
     float j = delta < 0 ? -jmax : jmax;
     if (ta < 0) { tj = trajectory_root(vmax / jmax, false); ta = 0; }
@@ -99,14 +138,15 @@ static void trajectory_plan(void)
 
 int pmsm_trajectory_init(void)
 {
-    if (!(MOTOR_TRAJECTORY_POSITION_MAX_COUNTS_S > 0) ||
-        MOTOR_TRAJECTORY_POSITION_MAX_COUNTS_S > MOTOR_POSITION_OUTPUT_LIMIT_COUNTS_PER_TICK * MOTOR_SPEED_LOOP_HZ ||
-        !trajectory_finite(MOTOR_TRAJECTORY_POSITION_MAX_COUNTS_S) ||
-        !(MOTOR_TRAJECTORY_ACCEL_COUNTS_S2 > 0) || !trajectory_finite(MOTOR_TRAJECTORY_ACCEL_COUNTS_S2) ||
-        !(MOTOR_TRAJECTORY_JERK_COUNTS_S3 > 0) || !trajectory_finite(MOTOR_TRAJECTORY_JERK_COUNTS_S3)) return -1;
+    const pmsm_trajectory_config_t defaults = { MOTOR_TRAJECTORY_POSITION_MAX_COUNTS_S,
+        MOTOR_TRAJECTORY_ACCEL_COUNTS_S2, MOTOR_TRAJECTORY_JERK_COUNTS_S3 };
+    if (pwm_is_enabled()) return PMSM_TRAJECTORY_BUSY;
+    if (!trajectory_config_valid(&defaults)) return PMSM_TRAJECTORY_INVALID_CONFIG;
+    trajectory_config = defaults;
     dt = 1.0f / MOTOR_SPEED_LOOP_HZ;
     memset((void *)&pmsm_trajectory_monitor, 0, sizeof(pmsm_trajectory_monitor));
     pmsm_trajectory_reset(0, 0);
+    initialized = true;
     return 0;
 }
 
@@ -150,8 +190,8 @@ int pmsm_trajectory_step(void)
         dirty = false; carry = 0;
         /* 改目标先连续地卸掉已有加速度，再减速/重规划，避免参考位置、速度跳变。 */
         if (trajectory_abs(a) > 0.0001f) {
-            duration[0] = trajectory_abs(a) / MOTOR_TRAJECTORY_JERK_COUNTS_S3;
-            jerk[0] = a < 0 ? MOTOR_TRAJECTORY_JERK_COUNTS_S3 : -MOTOR_TRAJECTORY_JERK_COUNTS_S3;
+            duration[0] = trajectory_abs(a) / trajectory_config.max_jerk_counts_s3;
+            jerk[0] = a < 0 ? trajectory_config.max_jerk_counts_s3 : -trajectory_config.max_jerk_counts_s3;
             segment = 0; segments = 1; stage = TRAJ_NEUTRAL; trajectory_anchor();
         } else { pmsm_trajectory_monitor.acceleration_counts_s2 = 0; trajectory_plan(); }
     }
