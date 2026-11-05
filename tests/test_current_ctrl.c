@@ -7,6 +7,7 @@
 #include "pmsm_init.h"
 #include "pmsm_speed_ctrl.h"
 #include "pmsm_position_ctrl.h"
+#include "pmsm_trajectory.h"
 #include "motor_config.h"
 #include "motor_vofa.h"
 #include "vofa_hpm_uart.h"
@@ -203,6 +204,18 @@ int main(void) {
     CHECK(pmsm_current_monitor.alignment_final_good_ticks>=200);
     CHECK(pmsm_current_monitor.alignment_last_bad_reason&PMSM_ALIGN_IQ_ERROR);
     noise_period=0;
+    {
+        pmsm_trajectory_config_t config, readback;
+        CHECK(pmsm_trajectory_get_config(&config)==0);
+        config.max_accel_counts_s2*=0.5f;
+        CHECK(pmsm_trajectory_set_config(&config)==0 && pmsm_is_ready());
+        CHECK(command("ENABLE,1\r")==0);
+        CHECK(pmsm_trajectory_set_config(&config)==PMSM_TRAJECTORY_BUSY); /* 电流模式也拒绝修改。 */
+        CHECK(command("STOP\r")==0);
+        CHECK(pmsm_trajectory_get_config(&readback)==0 && readback.max_accel_counts_s2==config.max_accel_counts_s2);
+        config.max_accel_counts_s2=MOTOR_TRAJECTORY_ACCEL_COUNTS_S2;
+        CHECK(pmsm_trajectory_set_config(&config)==0);
+    }
     CHECK(pmsm_current_monitor.alignment_best_ticks>=4000 && pmsm_current_monitor.alignment_motion_resets==0);
     CHECK(pmsm_current_monitor.offset_deg>=0 && pmsm_current_monitor.offset_deg<360);
     CHECK(command("SET,CURRENT_MA,500\r")==0);
@@ -312,14 +325,18 @@ int main(void) {
     inhibit_finish=false;frame(true);
     CHECK(pmsm_is_ready() && !enabled);
     CHECK(command("SET,SPEED_RPM,100\r")==0 && command("ENABLE,1\r")==0);
-    for(i=0;i<4000;++i)frame(true); /* 固定转子模型：速度误差持续存在，验证PI抗饱和。 */
+    for(i=0;i<600000 && pmsm_trajectory_monitor.active;++i)frame(true);
+    for(i=0;i<4000;++i)frame(true); /* 固定转子模型：完整加速后持续速度误差，验证PI抗饱和。 */
     CHECK(pmsm_speed_monitor.current_limited && pmsm_speed_monitor.iq_ref_ma==MOTOR_SPEED_CTRL_IQ_LIMIT_MA);
     CHECK(command("SET,SPEED_RPM,-100\r")==0);
+    for(i=0;i<600000 && pmsm_trajectory_monitor.active;++i)frame(true);
     for(i=0;i<4000;++i)frame(true);
     CHECK(pmsm_speed_monitor.current_limited && pmsm_speed_monitor.iq_ref_ma==-MOTOR_SPEED_CTRL_IQ_LIMIT_MA);
     CHECK(command("SET,SPEED_RPM,0\r")==0);
+    for(i=0;i<600000 && pmsm_trajectory_monitor.active;++i)frame(true);
     for(i=0;i<4000;++i)frame(true);
-    CHECK(fabsf(pmsm_speed_monitor.iq_ref_ma)<1); /* 没有累积不可恢复的积分。 */
+    CHECK(pmsm_speed_monitor.reference_counts_s==0 && !pmsm_trajectory_monitor.active);
+    CHECK(fabsf(pmsm_speed_monitor.iq_ref_ma)<=MOTOR_SPEED_CTRL_IQ_LIMIT_MA);
     CHECK(command("STOP\r")==0);
     mechanical=true;plant_u=plant_v=plant_omega=plant_position=load_torque=0;phase=0;
     CHECK(command("SET,SPEED_RPM,10\r")==0 && pmsm_speed_monitor.speed_mode);
@@ -362,12 +379,24 @@ int main(void) {
         late_peak=0;
         for(i=0;i<400000;++i) {
             frame(true);
+            if(i==19) {
+                CHECK(pmsm_trajectory_monitor.active && pmsm_trajectory_monitor.mode==PMSM_TRAJECTORY_POSITION);
+                CHECK(fabsf(pmsm_position_monitor.reference_count-goal)>1000);
+            }
+            if(i==20000 || i==40000) {
+                float before_p=pmsm_trajectory_monitor.position_count;
+                float before_v=pmsm_trajectory_monitor.speed_counts_s;
+                float before_a=pmsm_trajectory_monitor.acceleration_counts_s2;
+                CHECK(pmsm_current_ctrl_set_position_counts(i==20000 ? goal-4000 : goal)==0);
+                CHECK(pmsm_trajectory_monitor.position_count==before_p && pmsm_trajectory_monitor.speed_counts_s==before_v && pmsm_trajectory_monitor.acceleration_counts_s2==before_a);
+            }
             if(i>=380000 && fabsf(pmsm_position_monitor.error_count)>late_peak)late_peak=fabsf(pmsm_position_monitor.error_count);
         }
         printf("Position +2 turns: target=%d feedback=%d error=%.2f counts\n",goal,pmsm_position_monitor.position_count,pmsm_position_monitor.error_count);
         CHECK(pmsm_position_monitor.updates-position_updates==20000 && pmsm_speed_monitor.updates-speed_updates==20000);
         CHECK(fabsf(pmsm_position_monitor.error_count)<5 && !pmsm_current_monitor.faults);
         CHECK(late_peak<5); /* 不仅检查最后一拍，还检查末段持续稳定。 */
+        CHECK(!pmsm_trajectory_monitor.active && pmsm_trajectory_monitor.position_count==goal);
         goal=-4000; /* 穿过机械零点，到负向绝对位置。 */
         sprintf(text,"SET,POSITION_DEG,%.3f\r",goal*360.0f/(MOTOR_ABZ_COUNTS_PER_REV*MOTOR_SPEED_REDUCTION_RATIO));
         CHECK(command(text)==0);
@@ -407,6 +436,7 @@ int main(void) {
     CHECK(pmsm_current_monitor.faults&PMSM_CURRENT_TIMING_FAULT);
     CHECK(command("SET,SPEED_RPM,10\r")==-4);
     CHECK(!pmsm_position_monitor.running && pmsm_position_monitor.speed_ref_counts_s==0 && !pmsm_position_monitor.target_pending);
+    CHECK(pmsm_trajectory_monitor.mode==PMSM_TRAJECTORY_OFF && !pmsm_trajectory_monitor.active);
     CHECK(command("SET,POSITION_DEG,0\r")==-4);
     {
         encoder_data_t report;

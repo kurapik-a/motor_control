@@ -35,6 +35,9 @@ current_chain = ["current_sample", "current_trip", "current_watchdog", "current_
                  "pmsm_current_ctrl_set_position_counts", "pmsm_position_ctrl_observe", "pmsm_position_ctrl_reset_feedback",
                  "pmsm_position_ctrl_set_target", "pmsm_position_ctrl_step", "pmsm_position_ctrl_start",
                  "pmsm_position_ctrl_stop", "pmsm_position_ctrl_select_direct", "pmsm_position_ctrl_get_status",
+                 "pmsm_trajectory_reset", "pmsm_trajectory_set_speed", "pmsm_trajectory_set_position", "pmsm_trajectory_step",
+                 "pmsm_trajectory_set_config", "pmsm_trajectory_get_config",
+                 "trajectory_root", "trajectory_anchor", "trajectory_velocity", "trajectory_position", "trajectory_plan",
                  "pmsm_clarke", "pmsm_park", "pmsm_inv_park", "pmsm_sincos", "pmsm_svpwm",
                  "pmsm_pi_step", "pmsm_pi_reset", "pmsm_protect_check", "pmsm_protect_can_enable",
                  "pmsm_protect_clear", "evaluate", "encoder_read_phase", "encoder_read_position", "encoder_reset", "encoder_get_generation"]
@@ -69,6 +72,8 @@ for name in checked:
             filename = "pmsm_speed_ctrl.c.o"
         elif name.startswith("pmsm_position_ctrl_"):
             filename = "pmsm_position_ctrl.c.o"
+        elif name.startswith("pmsm_trajectory_") or name.startswith("trajectory_"):
+            filename = "pmsm_trajectory.c.o"
         elif name.startswith("pmsm_"):
             filename = "pmsm_foc.c.o"
         elif name in {"encoder_read_phase", "encoder_read_position", "encoder_reset", "encoder_get_generation"}:
