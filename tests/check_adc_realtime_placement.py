@@ -37,6 +37,7 @@ current_chain = ["current_sample", "current_trip", "current_watchdog", "current_
                  "pmsm_position_ctrl_stop", "pmsm_position_ctrl_select_direct", "pmsm_position_ctrl_get_status",
                  "pmsm_trajectory_reset", "pmsm_trajectory_set_speed", "pmsm_trajectory_set_position", "pmsm_trajectory_step",
                  "pmsm_trajectory_set_config", "pmsm_trajectory_get_config",
+                 "pmsm_trajectory_set_cycle_config", "pmsm_trajectory_get_cycle_config", "trajectory_position_done", "trajectory_dwell_done",
                  "trajectory_root", "trajectory_anchor", "trajectory_velocity", "trajectory_position", "trajectory_plan",
                  "pmsm_clarke", "pmsm_park", "pmsm_inv_park", "pmsm_sincos", "pmsm_svpwm",
                  "pmsm_pi_step", "pmsm_pi_reset", "pmsm_protect_check", "pmsm_protect_can_enable",

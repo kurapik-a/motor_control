@@ -48,6 +48,67 @@ static void position(float start, float goal)
     }
     CHECK(last == goal && pmsm_trajectory_monitor.speed_counts_s == 0);
 }
+static void cycle_tests(void)
+{
+    pmsm_trajectory_cycle_config_t config, saved;
+    unsigned i, legs=0, held=0;
+    bool was_dwell=false;
+    config.mode=PMSM_TRAJECTORY_ROUND_TRIP; config.cycle_count=2; config.dwell_ms=7;
+    CHECK(pmsm_trajectory_set_cycle_config(&config)==0);
+    CHECK(pmsm_trajectory_get_cycle_config(&saved)==0 && saved.cycle_count==2);
+    bridge_enabled=true;
+    CHECK(pmsm_trajectory_set_cycle_config(&config)==PMSM_TRAJECTORY_BUSY);
+    bridge_enabled=false;
+    config.mode=(pmsm_trajectory_cycle_mode_t)9;
+    CHECK(pmsm_trajectory_set_cycle_config(&config)==PMSM_TRAJECTORY_INVALID_CONFIG);
+    config=saved; config.dwell_ms=UINT32_MAX;
+    CHECK(pmsm_trajectory_set_cycle_config(&config)==PMSM_TRAJECTORY_INVALID_CONFIG);
+    CHECK(pmsm_trajectory_set_cycle_config(NULL)==PMSM_TRAJECTORY_INVALID_CONFIG);
+    CHECK(pmsm_trajectory_get_cycle_config(NULL)==PMSM_TRAJECTORY_INVALID_CONFIG);
+    pmsm_trajectory_reset(-100,0);
+    CHECK(pmsm_trajectory_set_position(100)==0);
+    for(i=0; i<200000 && pmsm_trajectory_monitor.active; ++i) {
+        if(pmsm_trajectory_monitor.dwelling) {
+            CHECK(pmsm_trajectory_monitor.speed_counts_s==0 && pmsm_trajectory_monitor.acceleration_counts_s2==0);
+            CHECK(pmsm_trajectory_monitor.position_count==pmsm_trajectory_monitor.target_count);
+            if(!was_dwell) { ++legs; held=0; }
+            ++held;
+        }
+        was_dwell=pmsm_trajectory_monitor.dwelling;
+        tick(limits.position_max_speed_counts_s);
+        if(was_dwell && !pmsm_trajectory_monitor.dwelling) CHECK(held==7);
+    }
+    CHECK(!pmsm_trajectory_monitor.active && pmsm_trajectory_monitor.position_count==-100);
+    CHECK(pmsm_trajectory_monitor.cycles_completed==2 && legs==3);
+    CHECK(pmsm_trajectory_set_position(100)==0 && pmsm_trajectory_monitor.active); /* 同目标可重启完整往返。 */
+    finish(limits.position_max_speed_counts_s);
+    config=saved; config.cycle_count=0; config.dwell_ms=0;
+    CHECK(pmsm_trajectory_set_cycle_config(&config)==0);
+    pmsm_trajectory_reset(50,0); CHECK(pmsm_trajectory_set_position(-50)==0);
+    for(i=0;i<200000 && pmsm_trajectory_monitor.cycles_completed<3;++i)tick(limits.position_max_speed_counts_s);
+    CHECK(pmsm_trajectory_monitor.active && pmsm_trajectory_monitor.cycles_completed==3);
+    pmsm_trajectory_reset(12,0); /* STOP/fault调用此接口，取消无限循环。 */
+    for(i=0;i<100;++i)tick(limits.position_max_speed_counts_s);
+    CHECK(!pmsm_trajectory_monitor.active && !pmsm_trajectory_monitor.cycling && pmsm_trajectory_monitor.position_count==12);
+    CHECK(pmsm_trajectory_set_position(12)==0);finish(limits.position_max_speed_counts_s); /* 零行程不循环。 */
+    config=saved; config.dwell_ms=100;
+    CHECK(pmsm_trajectory_set_cycle_config(&config)==0);
+    CHECK(pmsm_trajectory_set_position(100)==0);
+    for(i=0;i<200000 && !pmsm_trajectory_monitor.dwelling;++i)tick(limits.position_max_speed_counts_s);
+    CHECK(pmsm_trajectory_monitor.dwelling);
+    CHECK(pmsm_trajectory_set_position(200)==0 && !pmsm_trajectory_monitor.dwelling && pmsm_trajectory_monitor.cycles_completed==0);
+    CHECK(pmsm_trajectory_monitor.cycle_origin_count==100);
+    CHECK(pmsm_trajectory_set_speed(0)==0 && !pmsm_trajectory_monitor.cycling);
+    finish(limits.position_max_speed_counts_s);
+    config.mode=PMSM_TRAJECTORY_SINGLE; config.cycle_count=1; config.dwell_ms=5;
+    CHECK(pmsm_trajectory_set_cycle_config(&config)==0);
+    pmsm_trajectory_reset(0,0); CHECK(pmsm_trajectory_set_position(100)==0);
+    for(i=0;i<200000 && !pmsm_trajectory_monitor.dwelling;++i)tick(limits.position_max_speed_counts_s);
+    CHECK(pmsm_trajectory_monitor.dwelling && pmsm_trajectory_monitor.dwell_ticks_remaining==5);
+    for(i=0;i<5;++i)tick(limits.position_max_speed_counts_s);
+    CHECK(!pmsm_trajectory_monitor.active && pmsm_trajectory_monitor.position_count==100);
+    puts("PASS cycles: finite/infinite round trips, exact dwell ticks, retrigger, retarget, zero distance, cancellation, config gates");
+}
 int main(void)
 {
     unsigned i, k;
@@ -122,6 +183,7 @@ int main(void)
     pmsm_trajectory_reset(0,0);
     CHECK(pmsm_trajectory_get_config(&readback)==0 && readback.max_accel_counts_s2==config.max_accel_counts_s2);
     CHECK(irq_depth==0);
+    cycle_tests();
     printf("PASS trajectory: %u samples, S-curve limits, short/long/signed moves, live retarget, speed reversal, cancellation\n",samples);
     return 0;
 }

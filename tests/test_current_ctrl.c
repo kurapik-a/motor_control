@@ -430,7 +430,31 @@ int main(void) {
         CHECK(pmsm_current_ctrl_set_position_counts(MOTOR_POSITION_MAX_COMMAND_COUNTS+1)==-1);
         CHECK(command("STOP\r")==0);
     }
-    CHECK(command("ENABLE,1\r")==0);frame(true);
+    {
+        pmsm_trajectory_cycle_config_t cycle;
+        int32_t origin;
+        cycle.mode=PMSM_TRAJECTORY_ROUND_TRIP;cycle.cycle_count=1;cycle.dwell_ms=100;
+        CHECK(pmsm_trajectory_set_cycle_config(&cycle)==0);
+        CHECK(encoder_read_position(&origin)==0);
+        CHECK(pmsm_current_ctrl_set_position_counts(origin+500)==0 && command("ENABLE,1\r")==0);
+        CHECK(pmsm_trajectory_set_cycle_config(&cycle)==PMSM_TRAJECTORY_BUSY);
+        for(i=0;i<600000 && pmsm_trajectory_monitor.active;++i)frame(true);
+        CHECK(!pmsm_trajectory_monitor.active && pmsm_trajectory_monitor.cycles_completed==1);
+        CHECK(pmsm_trajectory_monitor.position_count==origin && pmsm_position_monitor.target_count==origin);
+        for(i=0;i<200000;++i)frame(true);
+        CHECK(fabsf(pmsm_position_monitor.position_count-origin)<5 && !pmsm_current_monitor.faults);
+        CHECK(command("STOP\r")==0);
+        cycle.cycle_count=0; CHECK(pmsm_trajectory_set_cycle_config(&cycle)==0);
+        CHECK(pmsm_current_ctrl_set_position_counts(origin+500)==0 && command("ENABLE,1\r")==0);
+        for(i=0;i<20000;++i)frame(true);
+        CHECK(pmsm_trajectory_monitor.active && pmsm_trajectory_monitor.cycling);
+        CHECK(command("STOP\r")==0 && !pmsm_trajectory_monitor.cycling && !pmsm_trajectory_monitor.active);
+        CHECK(command("ENABLE,1\r")==0);
+        for(i=0;i<4000;++i)frame(true);
+        CHECK(!pmsm_trajectory_monitor.cycling); /* 未下新目标不得恢复旧往返。 */
+        CHECK(pmsm_current_ctrl_set_position_counts(origin+500)==0);
+        frame(true);CHECK(pmsm_trajectory_monitor.cycling);
+    }
     cycles+=101;CHECK(watchdog);watchdog();
     CHECK(!enabled && !pmsm_speed_monitor.running && pmsm_speed_monitor.iq_ref_ma==0 && pmsm_speed_monitor.target_counts_s==0);
     CHECK(pmsm_current_monitor.faults&PMSM_CURRENT_TIMING_FAULT);
