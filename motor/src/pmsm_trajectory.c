@@ -11,7 +11,7 @@
 #include <string.h>
 
 volatile pmsm_trajectory_status_t pmsm_trajectory_monitor;
-enum { TRAJ_IDLE, TRAJ_NEUTRAL, TRAJ_BRAKE, TRAJ_SPEED, TRAJ_POSITION };
+enum { TRAJ_IDLE, TRAJ_NEUTRAL, TRAJ_BRAKE, TRAJ_SPEED, TRAJ_POSITION, TRAJ_DWELL };
 static float duration[7], jerk[7];
 static float anchor_p, anchor_v, anchor_a, carry, dt;
 static uint32_t ticks;
@@ -19,6 +19,7 @@ static unsigned segment, segments, stage;
 static bool dirty;
 static bool initialized;
 static pmsm_trajectory_config_t trajectory_config;
+static pmsm_trajectory_cycle_config_t cycle_config;
 MOTOR_INLINE float trajectory_abs(float x) { return x < 0 ? -x : x; }
 MOTOR_INLINE bool trajectory_finite(float x) { return x >= -FLT_MAX && x <= FLT_MAX; }
 MOTOR_INLINE bool trajectory_config_valid(const pmsm_trajectory_config_t *config)
@@ -52,6 +53,38 @@ int pmsm_trajectory_get_config(pmsm_trajectory_config_t *config)
     irq = disable_global_irq(CSR_MSTATUS_MIE_MASK);
     if (!initialized) { restore_global_irq(irq); return PMSM_TRAJECTORY_NOT_INITIALIZED; }
     *config = trajectory_config;
+    restore_global_irq(irq);
+    return PMSM_TRAJECTORY_OK;
+}
+
+MOTOR_INLINE bool trajectory_cycle_valid(const pmsm_trajectory_cycle_config_t *config)
+{
+    return (config->mode == PMSM_TRAJECTORY_SINGLE || config->mode == PMSM_TRAJECTORY_ROUND_TRIP) &&
+        config->dwell_ms <= (UINT32_MAX - 999u) / MOTOR_SPEED_LOOP_HZ;
+}
+
+int pmsm_trajectory_set_cycle_config(const pmsm_trajectory_cycle_config_t *config)
+{
+    pmsm_trajectory_cycle_config_t next;
+    uint32_t irq;
+    if (!config) return PMSM_TRAJECTORY_INVALID_CONFIG;
+    next = *config;
+    if (!trajectory_cycle_valid(&next)) return PMSM_TRAJECTORY_INVALID_CONFIG;
+    irq = disable_global_irq(CSR_MSTATUS_MIE_MASK);
+    if (!initialized) { restore_global_irq(irq); return PMSM_TRAJECTORY_NOT_INITIALIZED; }
+    if (pwm_is_enabled()) { restore_global_irq(irq); return PMSM_TRAJECTORY_BUSY; }
+    cycle_config = next;
+    restore_global_irq(irq);
+    return PMSM_TRAJECTORY_OK;
+}
+
+int pmsm_trajectory_get_cycle_config(pmsm_trajectory_cycle_config_t *config)
+{
+    uint32_t irq;
+    if (!config) return PMSM_TRAJECTORY_INVALID_CONFIG;
+    irq = disable_global_irq(CSR_MSTATUS_MIE_MASK);
+    if (!initialized) { restore_global_irq(irq); return PMSM_TRAJECTORY_NOT_INITIALIZED; }
+    *config = cycle_config;
     restore_global_irq(irq);
     return PMSM_TRAJECTORY_OK;
 }
@@ -140,9 +173,12 @@ int pmsm_trajectory_init(void)
 {
     const pmsm_trajectory_config_t defaults = { MOTOR_TRAJECTORY_POSITION_MAX_COUNTS_S,
         MOTOR_TRAJECTORY_ACCEL_COUNTS_S2, MOTOR_TRAJECTORY_JERK_COUNTS_S3 };
+    const pmsm_trajectory_cycle_config_t cycles = {
+        MOTOR_TRAJECTORY_CYCLE_MODE, MOTOR_TRAJECTORY_CYCLE_COUNT, MOTOR_TRAJECTORY_DWELL_MS };
     if (pwm_is_enabled()) return PMSM_TRAJECTORY_BUSY;
-    if (!trajectory_config_valid(&defaults)) return PMSM_TRAJECTORY_INVALID_CONFIG;
+    if (!trajectory_config_valid(&defaults) || !trajectory_cycle_valid(&cycles)) return PMSM_TRAJECTORY_INVALID_CONFIG;
     trajectory_config = defaults;
+    cycle_config = cycles;
     dt = 1.0f / MOTOR_SPEED_LOOP_HZ;
     memset((void *)&pmsm_trajectory_monitor, 0, sizeof(pmsm_trajectory_monitor));
     pmsm_trajectory_reset(0, 0);
@@ -157,6 +193,9 @@ void pmsm_trajectory_reset(float position_count, float speed_counts_s)
     pmsm_trajectory_monitor.target_count = pmsm_trajectory_monitor.position_count = position_count;
     pmsm_trajectory_monitor.target_counts_s = pmsm_trajectory_monitor.speed_counts_s = speed_counts_s;
     pmsm_trajectory_monitor.acceleration_counts_s2 = 0;
+    pmsm_trajectory_monitor.cycling = pmsm_trajectory_monitor.returning = pmsm_trajectory_monitor.dwelling = false;
+    pmsm_trajectory_monitor.cycles_completed = pmsm_trajectory_monitor.dwell_ticks_remaining = 0;
+    pmsm_trajectory_monitor.cycle_origin_count = pmsm_trajectory_monitor.cycle_destination_count = position_count;
     dirty = false; stage = TRAJ_IDLE; segment = segments = 0; carry = 0;
     trajectory_anchor();
 }
@@ -166,6 +205,8 @@ int pmsm_trajectory_set_speed(float target_counts_s)
     if (!trajectory_finite(target_counts_s) || trajectory_abs(target_counts_s) > MOTOR_SPEED_CTRL_MAX_COUNTS_S) return -1;
     if (pmsm_trajectory_monitor.mode == PMSM_TRAJECTORY_SPEED && pmsm_trajectory_monitor.target_counts_s == target_counts_s) return 0;
     pmsm_trajectory_monitor.mode = PMSM_TRAJECTORY_SPEED;
+    pmsm_trajectory_monitor.cycling = pmsm_trajectory_monitor.dwelling = pmsm_trajectory_monitor.returning = false;
+    pmsm_trajectory_monitor.dwell_ticks_remaining = 0;
     pmsm_trajectory_monitor.target_counts_s = target_counts_s;
     pmsm_trajectory_monitor.active = dirty = true;
     return 0;
@@ -174,11 +215,49 @@ int pmsm_trajectory_set_speed(float target_counts_s)
 int pmsm_trajectory_set_position(float target_count)
 {
     if (!trajectory_finite(target_count) || trajectory_abs(target_count) > MOTOR_POSITION_MAX_COMMAND_COUNTS) return -1;
-    if (pmsm_trajectory_monitor.mode == PMSM_TRAJECTORY_POSITION && pmsm_trajectory_monitor.target_count == target_count) return 0;
+    if (pmsm_trajectory_monitor.mode == PMSM_TRAJECTORY_POSITION && pmsm_trajectory_monitor.cycle_destination_count == target_count &&
+        (pmsm_trajectory_monitor.active || cycle_config.mode == PMSM_TRAJECTORY_SINGLE)) return 0;
     pmsm_trajectory_monitor.mode = PMSM_TRAJECTORY_POSITION;
+    pmsm_trajectory_monitor.cycle_origin_count = pmsm_trajectory_monitor.position_count;
+    pmsm_trajectory_monitor.cycle_destination_count = target_count;
+    pmsm_trajectory_monitor.cycling = cycle_config.mode == PMSM_TRAJECTORY_ROUND_TRIP &&
+        target_count != pmsm_trajectory_monitor.cycle_origin_count;
+    pmsm_trajectory_monitor.returning = pmsm_trajectory_monitor.dwelling = false;
+    pmsm_trajectory_monitor.cycles_completed = pmsm_trajectory_monitor.dwell_ticks_remaining = 0;
     pmsm_trajectory_monitor.target_count = target_count;
     pmsm_trajectory_monitor.active = dirty = true;
     return 0;
+}
+
+static void trajectory_position_done(void) MOTOR_RAMFUNC;
+static void trajectory_position_done(void)
+{
+    if (pmsm_trajectory_monitor.cycling && pmsm_trajectory_monitor.returning) {
+        if (pmsm_trajectory_monitor.cycles_completed != UINT32_MAX) ++pmsm_trajectory_monitor.cycles_completed;
+        if (cycle_config.cycle_count && pmsm_trajectory_monitor.cycles_completed >= cycle_config.cycle_count) {
+            pmsm_trajectory_monitor.cycling = false;
+            pmsm_trajectory_monitor.active = false;
+            stage = TRAJ_IDLE;
+            return;
+        }
+    }
+    pmsm_trajectory_monitor.dwell_ticks_remaining = (cycle_config.dwell_ms * MOTOR_SPEED_LOOP_HZ + 999u) / 1000u;
+    pmsm_trajectory_monitor.dwelling = true;
+    stage = TRAJ_DWELL;
+}
+
+static void trajectory_dwell_done(void) MOTOR_RAMFUNC;
+static void trajectory_dwell_done(void)
+{
+    pmsm_trajectory_monitor.dwelling = false;
+    if (!pmsm_trajectory_monitor.cycling) {
+        stage = TRAJ_IDLE; pmsm_trajectory_monitor.active = false; return;
+    }
+    pmsm_trajectory_monitor.returning = !pmsm_trajectory_monitor.returning;
+    pmsm_trajectory_monitor.target_count = pmsm_trajectory_monitor.returning ?
+        pmsm_trajectory_monitor.cycle_origin_count : pmsm_trajectory_monitor.cycle_destination_count;
+    carry = 0;
+    trajectory_position();
 }
 
 int pmsm_trajectory_step(void)
@@ -196,6 +275,14 @@ int pmsm_trajectory_step(void)
         } else { pmsm_trajectory_monitor.acceleration_counts_s2 = 0; trajectory_plan(); }
     }
     ++pmsm_trajectory_monitor.updates;
+    if (stage == TRAJ_DWELL) {
+        if (pmsm_trajectory_monitor.dwell_ticks_remaining) {
+            --pmsm_trajectory_monitor.dwell_ticks_remaining;
+            if (pmsm_trajectory_monitor.dwell_ticks_remaining) return 0;
+        }
+        trajectory_dwell_done();
+        return 0; /* 完整驻留拍不推进新段；下一拍开始运动。 */
+    }
     ++ticks;
     if (stage == TRAJ_IDLE) {
         if (pmsm_trajectory_monitor.mode == PMSM_TRAJECTORY_SPEED)
@@ -231,11 +318,16 @@ int pmsm_trajectory_step(void)
                     pmsm_trajectory_monitor.position_count = pmsm_trajectory_monitor.target_count;
                     pmsm_trajectory_monitor.speed_counts_s = 0;
                 } else pmsm_trajectory_monitor.speed_counts_s = pmsm_trajectory_monitor.target_counts_s;
-                stage = TRAJ_IDLE;
-                pmsm_trajectory_monitor.active = false;
+                if (stage == TRAJ_POSITION) trajectory_position_done();
+                else { stage = TRAJ_IDLE; pmsm_trajectory_monitor.active = false; }
             }
         }
         trajectory_anchor();
+        if (stage == TRAJ_DWELL) {
+            carry = 0;
+            if (pmsm_trajectory_monitor.dwell_ticks_remaining) break;
+            trajectory_dwell_done();
+        }
     }
     if (stage == TRAJ_IDLE && pmsm_trajectory_monitor.mode == PMSM_TRAJECTORY_SPEED)
         pmsm_trajectory_monitor.position_count = anchor_p + anchor_v * carry;

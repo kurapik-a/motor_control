@@ -15,6 +15,15 @@ typedef struct {
     float max_jerk_counts_s3;
 } pmsm_trajectory_config_t;
 
+typedef enum {
+    PMSM_TRAJECTORY_SINGLE = 0, PMSM_TRAJECTORY_ROUND_TRIP = 1
+} pmsm_trajectory_cycle_mode_t;
+typedef struct {
+    pmsm_trajectory_cycle_mode_t mode;
+    uint32_t cycle_count; /* 一次=A→B→A；0为持续往返。仅ROUND_TRIP使用。 */
+    uint32_t dwell_ms;    /* 每段参考轨迹完成后的闭环保持时间，非实际到位判据。 */
+} pmsm_trajectory_cycle_config_t;
+
 enum {
     PMSM_TRAJECTORY_OK = 0,
     PMSM_TRAJECTORY_INVALID_CONFIG = -1,
@@ -23,10 +32,13 @@ enum {
 };
 typedef struct {
     pmsm_trajectory_mode_t mode;
-    bool active; /* 参考轨迹尚未结束；不代表实际电机已经到位。 */
+    bool active; /* 整个参考任务尚未结束，含驻留/往返；不代表实际到位。 */
     uint32_t updates;
     float target_count, target_counts_s;
     float position_count, speed_counts_s, acceleration_counts_s2;
+    bool cycling, returning, dwelling;
+    uint32_t cycles_completed, dwell_ticks_remaining;
+    float cycle_origin_count, cycle_destination_count;
 } pmsm_trajectory_status_t;
 extern volatile pmsm_trajectory_status_t pmsm_trajectory_monitor;
 int pmsm_trajectory_init(void);
@@ -35,6 +47,9 @@ int pmsm_trajectory_init(void);
  * 桥使能期间（包括匀速、零速保持、对齐、电流模式）均拒绝修改。 */
 int pmsm_trajectory_set_config(const pmsm_trajectory_config_t *config) MOTOR_RAMFUNC;
 int pmsm_trajectory_get_config(pmsm_trajectory_config_t *config) MOTOR_RAMFUNC;
+/* 独立循环配置，保留原三项运动配置接口；同样只允许关桥后修改。 */
+int pmsm_trajectory_set_cycle_config(const pmsm_trajectory_cycle_config_t *config) MOTOR_RAMFUNC;
+int pmsm_trajectory_get_cycle_config(pmsm_trajectory_cycle_config_t *config) MOTOR_RAMFUNC;
 /* 与外环相同的1kHz串行上下文；全部使用电机轴计数，无角度/rpm换算。 */
 void pmsm_trajectory_reset(float position_count, float speed_counts_s) MOTOR_RAMFUNC;
 int pmsm_trajectory_set_speed(float target_counts_s) MOTOR_RAMFUNC;

@@ -55,6 +55,7 @@ int pmsm_position_ctrl_step(void)
     float previous = position_pi.mem;
     if (!pmsm_position_monitor.position_mode || !pmsm_position_monitor.running || !pmsm_position_monitor.feedback_valid) return -1;
     pmsm_position_monitor.reference_count = pmsm_trajectory_monitor.position_count;
+    pmsm_position_monitor.target_count = pmsm_trajectory_monitor.target_count;
     pmsm_position_monitor.feedforward_counts_s = pmsm_trajectory_monitor.speed_counts_s;
     if (pmsm_pi_step(&position_pi, pmsm_position_monitor.reference_count, (float)pmsm_position_monitor.position_count)) return -1;
     pmsm_position_monitor.error_count = pmsm_position_monitor.reference_count - (float)pmsm_position_monitor.position_count;

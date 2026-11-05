@@ -70,6 +70,13 @@
 #error "Current-loop frequency must be divisible by speed-loop frequency"
 #endif
 
+/* 位置循环：0=单次，1=当前位置A与SET位置B往返；上电不自动运动。
+ * 一次为A→B→A；次数0表示持续往返。驻留是参考段结束后的闭环保持。
+ * STOP/故障取消循环；重新ENABLE且未下新目标时只保持当前位置。 */
+#define MOTOR_TRAJECTORY_CYCLE_MODE 0u
+#define MOTOR_TRAJECTORY_CYCLE_COUNT 1u
+#define MOTOR_TRAJECTORY_DWELL_MS 0u
+
 /* ===== 4. 对齐专用：进入RUNNING后不再执行 ===== */
 #define MOTOR_ALIGN_START_ELECTRICAL_DEG 90.0f         /* 对齐初始电角度，单位电角度。 */
 #define MOTOR_CURRENT_ALIGN_VOLTAGE_LIMIT_TICKS 500.0f /* 对齐期独立总限幅，单位为原SVPWM电压计数。 */
