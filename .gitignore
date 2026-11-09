@@ -16,8 +16,18 @@ build.ninja
 CMakeCache.txt
 cmake_install.cmake
 compile_commands.json
-.cache/encoder_position/
-.cache/simulink_compare/
+.cache/
+
+# Local development helpers
+/tests/
+/build.cmd
+/build.ps1
+/organize_ses.py
+
+# Keep READMEs; other Markdown notes stay local
+*.md
+!README*.md
+!readme*.md
 
 # IDE / OS
 .vscode/.browse.c_cpp.db*
